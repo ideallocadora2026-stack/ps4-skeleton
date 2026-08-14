@@ -33,6 +33,10 @@ jobs:
 
     - name: Create PKG
       run: |
+        # Conserta a pasta dos arquivos de sistema
+        cp Boyceta-ps4/sce_sys/param.sfo sce_sys/param.sfo || true
+        cp Boyceta-ps4/sce_sys/keystone sce_sys/keystone || true
+        
         mkdir -p output
         $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-BOYC00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/keystone sce_sys/icon0.png Boyceta-ps4/index.html Boyceta-ps4/script.js Boyceta-ps4/style.css"
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
