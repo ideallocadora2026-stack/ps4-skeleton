@@ -23,13 +23,21 @@ jobs:
         echo "Downloading: $ASSET_URL"
         curl -L "$ASSET_URL" -o toolchain.tar.gz
         mkdir -p $HOME/OpenOrbis
-        tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis --strip-components=1
-        echo "OPENORBIS=$HOME/OpenOrbis" >> $GITHUB_ENV
-        chmod +x $HOME/OpenOrbis/bin/* 2>/dev/null || true
+        tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis
+        echo "=== Directory structure ==="
+        ls $HOME/OpenOrbis/
+        # Find OpenOrbis.mk to get correct root
+        ORBIS_MK=$(find $HOME/OpenOrbis -name "OpenOrbis.mk" | head -1)
+        echo "Found OpenOrbis.mk at: $ORBIS_MK"
+        OPENORBIS_PATH=$(dirname $(dirname $(dirname $ORBIS_MK)))
+        echo "OPENORBIS=$OPENORBIS_PATH" >> $GITHUB_ENV
+        echo "PATH=$OPENORBIS_PATH/bin:$PATH" >> $GITHUB_ENV
+        echo "Set OPENORBIS to: $OPENORBIS_PATH"
 
     - name: Build eboot.bin
       run: |
-        export PATH=$HOME/OpenOrbis/bin:$PATH
+        echo "OPENORBIS=$OPENORBIS"
+        ls $OPENORBIS/
         make
 
     - name: Install create-gp4
