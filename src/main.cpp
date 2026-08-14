@@ -5,7 +5,7 @@
 #include <orbis/SystemService.h>
 
 int main(void) {
-    char *args[] = {
+    const char *args[] = {
         "pstorage:///data/self/Boyceta-ps4/index.html",
         NULL
     };
