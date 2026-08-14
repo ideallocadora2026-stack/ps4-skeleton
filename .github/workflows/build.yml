@@ -17,7 +17,11 @@ jobs:
 
     - name: Install OpenOrbis Toolchain
       run: |
-        curl -sL "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest/download/toolchain.tar.gz" -o toolchain.tar.gz
+        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest \
+          | grep "browser_download_url" | grep -v ".exe" | grep -v ".pkg" \
+          | head -1 | cut -d '"' -f 4)
+        echo "Downloading: $ASSET_URL"
+        curl -L "$ASSET_URL" -o toolchain.tar.gz
         mkdir -p $HOME/OpenOrbis
         tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis --strip-components=1
         echo "OPENORBIS=$HOME/OpenOrbis" >> $GITHUB_ENV
@@ -30,10 +34,13 @@ jobs:
 
     - name: Install create-gp4
       run: |
-        curl -sL "https://github.com/OpenOrbis/create-gp4/releases/latest/download/create-gp4-linux" -o /usr/local/bin/create-gp4
+        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/create-gp4/releases/latest \
+          | grep "browser_download_url" | grep -i "linux" | head -1 | cut -d '"' -f 4)
+        echo "Downloading: $ASSET_URL"
+        curl -L "$ASSET_URL" -o /usr/local/bin/create-gp4
         chmod +x /usr/local/bin/create-gp4
 
-    - name: Create GP4 and PKG
+    - name: Create PKG
       run: |
         mkdir -p output
         create-gp4 \
