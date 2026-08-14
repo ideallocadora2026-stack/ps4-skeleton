@@ -1,0 +1,59 @@
+name: Build Boyceta PS4 PKG
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install OpenOrbis Toolchain
+      run: |
+        curl -sL "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest/download/toolchain.tar.gz" -o toolchain.tar.gz
+        mkdir -p $HOME/OpenOrbis
+        tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis --strip-components=1
+        echo "OPENORBIS=$HOME/OpenOrbis" >> $GITHUB_ENV
+        chmod +x $HOME/OpenOrbis/bin/* 2>/dev/null || true
+
+    - name: Build eboot.bin
+      run: |
+        export PATH=$HOME/OpenOrbis/bin:$PATH
+        make
+
+    - name: Install create-gp4
+      run: |
+        curl -sL "https://github.com/OpenOrbis/create-gp4/releases/latest/download/create-gp4-linux" -o /usr/local/bin/create-gp4
+        chmod +x /usr/local/bin/create-gp4
+
+    - name: Create GP4 and PKG
+      run: |
+        mkdir -p output
+        create-gp4 \
+          --content-id "IV0001-BOYC00001_00-0000000000000000" \
+          --title "Boyceta PS4" \
+          --title-id "BOYC00001" \
+          --version "01.00" \
+          --app-ver "01.00" \
+          --target output/Boyceta-ps4.pkg \
+          eboot.bin \
+          sce_sys/param.sfo \
+          sce_sys/keystone \
+          sce_sys/icon0.png \
+          Boyceta-ps4/index.html \
+          Boyceta-ps4/script.js \
+          Boyceta-ps4/style.css
+
+    - name: Upload PKG
+      uses: actions/upload-artifact@v4
+      with:
+        name: Boyceta-PS4-PKG
+        path: output/Boyceta-ps4.pkg
+        retention-days: 30
