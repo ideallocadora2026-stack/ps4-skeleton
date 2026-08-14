@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Geometry — PS4 Edition</title>
+<meta name="description" content="Jogo de ação neon para PS4 com multiplayer local de até 4 jogadores.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="menus-layer">
+
+  <!-- ══ MAIN MENU ══ -->
+  <div id="main-menu" class="center-screen glass-panel">
+    <h1 class="title-main">NEON GEOMETRY</h1>
+    <p class="title-sub">PS4 EDITION</p>
+    <div class="menu-options" id="main-menu-options">
+      <button class="menu-btn selected" data-action="solo">JOGAR SOLO</button>
+      <button class="menu-btn" data-action="local">JOGAR LOCAL (CO-OP)</button>
+      <button class="menu-btn" data-action="skins">LOJA DE COSMÉTICOS</button>
+      <button class="menu-btn" data-action="controls">CONTROLES GLOBAIS</button>
+      <button class="menu-btn" data-action="exit" style="color:#ff6677;">SAIR</button>
+    </div>
+    <p class="menu-hint">D-PAD NAVEGAR &nbsp;|&nbsp; ✕ CONFIRMAR &nbsp;|&nbsp; ○ VOLTAR</p>
+  </div>
+
+  <!-- ══ LOBBY ══ -->
+  <div id="lobby-screen" class="center-screen glass-panel hidden">
+    <h1 style="font-family:Orbitron,sans-serif;font-size:1.6rem;letter-spacing:4px;color:#00d4ff;margin-bottom:4px;">SALA DE ESPERA</h1>
+    <p style="color:rgba(180,200,230,.5);letter-spacing:2px;margin-bottom:22px;font-size:.85rem;">CO-OP LOCAL — ATÉ 4 JOGADORES</p>
+    <div id="lobby-players" style="display:flex;gap:14px;justify-content:center;margin-bottom:18px;flex-wrap:wrap;"></div>
+    <h2 id="lobby-status" style="letter-spacing:2px;font-size:1.1rem;"></h2>
+    <p class="menu-hint" style="margin-top:14px;">○ VOLTAR</p>
+  </div>
+
+  <!-- ══ PAUSE ══ -->
+  <div id="pause-screen" class="center-screen glass-panel hidden">
+    <h1 style="font-family:Orbitron,sans-serif;font-size:1.5rem;letter-spacing:4px;color:#00d4ff;margin-bottom:4px;">PAUSADO</h1>
+    <p id="pause-who" style="letter-spacing:2px;margin-bottom:18px;font-size:.95rem;color:#ffd700;"></p>
+    <div class="menu-options" id="pause-menu-options">
+      <button class="menu-btn selected" data-action="resume">RETOMAR</button>
+      <button class="menu-btn" data-action="controls">CONTROLES / AJUSTES</button>
+      <button class="menu-btn" data-action="skins">LOJA DE COSMÉTICOS</button>
+      <button class="menu-btn" data-action="quit" style="color:#ff6677;">SAIR AO MENU</button>
+    </div>
+  </div>
+
+  <!-- ══ CONTROLS ══ -->
+  <div id="controls-screen" class="center-screen glass-panel hidden">
+    <h1 style="font-family:Orbitron,sans-serif;font-size:1.2rem;letter-spacing:3px;color:#ffd700;margin-bottom:18px;">CONTROLES — JOGADOR <span id="cfg-pnum">1</span></h1>
+    <div id="cfg-menu-options">
+      <div class="cfg-row"><span class="cfg-label">Pausar</span><button class="menu-btn cfg-btn selected" data-bind="pause">OPTIONS</button></div>
+      <div class="cfg-row"><span class="cfg-label">Habilidade (Time Stop)</span><button class="menu-btn cfg-btn" data-bind="skill">R2</button></div>
+      <div class="cfg-row"><span class="cfg-label">Upgrade Tiro (Velocidade)</span><button class="menu-btn cfg-btn" data-bind="upg1">L1</button></div>
+      <div class="cfg-row"><span class="cfg-label">Upgrade Dano</span><button class="menu-btn cfg-btn" data-bind="upg2">R1</button></div>
+      <div class="cfg-row"><span class="cfg-label">Upgrade Habilidade</span><button class="menu-btn cfg-btn" data-bind="upg3">TRIANGULO</button></div>
+      <hr class="cfg-separator">
+      <div class="cfg-row"><span class="cfg-label">Gráficos</span><button class="menu-btn cfg-btn" data-setting="graphics">ALTO</button></div>
+      <div class="cfg-row"><span class="cfg-label">Sensibilidade</span><button class="menu-btn cfg-btn" data-setting="sensitivity">1.0x</button></div>
+      <div class="cfg-row"><span class="cfg-label">Vibração</span><button class="menu-btn cfg-btn" data-setting="rumble">100%</button></div>
+      <hr class="cfg-separator">
+      <button class="menu-btn" data-action="back" style="margin-top:8px;">VOLTAR</button>
+    </div>
+    <p class="menu-hint" style="margin-top:12px;">D-PAD: NAVEGAR / AJUSTAR &nbsp;|&nbsp; ✕: ALTERAR &nbsp;|&nbsp; ○: VOLTAR</p>
+    <p id="binding-msg" class="hidden" style="margin-top:10px;color:#bb44ff;letter-spacing:2px;font-size:.85rem;animation:blink .5s infinite;">PRESSIONE O NOVO BOTÃO...</p>
+  </div>
+
+  <!-- ══ SKIN SHOP ══ -->
+  <div id="skin-shop-screen" class="center-screen glass-panel hidden">
+    <h1 style="font-family:Orbitron,sans-serif;font-size:1.2rem;letter-spacing:3px;color:#bb44ff;margin-bottom:6px;">LOJA DE COSMÉTICOS</h1>
+    <p class="shop-wallet">PRATA DO PERFIL: <span id="shop-silver">0</span></p>
+    <div class="shop-layout">
+      <section class="shop-catalog">
+        <div id="skin-tabs-menu" class="skin-tabs">
+          <button class="menu-btn selected" data-tab="skins">TRAJES</button>
+          <button class="menu-btn" data-tab="hats">ACESSÓRIOS</button>
+        </div>
+        <div id="skin-grid" class="skin-grid"></div>
+      </section>
+      <aside class="character-showcase" aria-label="Prévia do personagem">
+        <p class="showcase-kicker">MONSTRUÁRIO</p>
+        <canvas id="character-preview" width="250" height="250"></canvas>
+        <p id="preview-skin" class="showcase-item"></p>
+        <p id="preview-hat" class="showcase-item"></p>
+        <p class="showcase-hint">EQUIPAMENTO ATUAL</p>
+      </aside>
+    </div>
+    <button class="menu-btn" data-action="back-skin" style="margin-top:12px;">VOLTAR</button>
+    <p class="menu-hint">D-PAD NAVEGA &nbsp;|&nbsp; ✕ COMPRA / EQUIPA &nbsp;|&nbsp; ○ VOLTA</p>
+  </div>
+
+  <!-- ══ GAME OVER ══ -->
+  <div id="game-over" class="center-screen glass-panel hidden">
+    <h1 style="font-family:Orbitron,sans-serif;font-size:2.2rem;color:#ff2244;text-shadow:0 0 20px #ff2244;margin-bottom:14px;">SISTEMA FALHOU</h1>
+    <div class="final-stats">
+      <p>ONDA MÁXIMA: <span id="final-wave" style="color:#00d4ff;font-weight:700;">0</span></p>
+      <p>PONTUAÇÃO: <span id="final-score" style="color:#ffd700;font-weight:700;">0</span></p>
+    </div>
+    <div class="menu-options" id="go-menu-options">
+      <button class="menu-btn selected" data-action="quit">VOLTAR AO MENU</button>
+    </div>
+  </div>
+
+  <!-- ══ SAVE NOTIFICATION ══ -->
+  <div id="save-notification" class="hidden">SALVANDO...</div>
+</div>
+
+<!-- HUD DINÂMICO (criado via JS) -->
+<div id="hud-layer"></div>
+
+<!-- HUD GLOBAL (Boss / Anúncio) -->
+<div id="global-hud" class="hidden">
+  <div id="boss-hud" class="glass-panel hidden">
+    <h2 id="boss-name" style="font-family:Orbitron,sans-serif;font-size:.85rem;letter-spacing:3px;color:#ff2244;text-shadow:0 0 10px #ff2244;">SISTEMA DEFENSIVO</h2>
+    <p id="boss-phase" style="font-size:.7rem;color:#aaa;margin:3px 0 7px;letter-spacing:1px;">FASE 1: DESTRUA AS ARMAS ORBITAIS</p>
+    <div class="boss-bar"><div id="boss-hp-fill"></div></div>
+  </div>
+  <div id="announcement" class="center-screen hidden">
+    <h1 id="announce-text" style="color:#00d4ff;">ONDA 1</h1>
+  </div>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+<script src="script.js"></script>
+</body>
+</html>
