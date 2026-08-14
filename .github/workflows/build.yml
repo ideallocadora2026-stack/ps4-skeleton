@@ -33,17 +33,28 @@ jobs:
 
     - name: Create PKG
       run: |
-        # Conserta a pasta dos arquivos de sistema
-        cp Boyceta-ps4/sce_sys/param.sfo sce_sys/param.sfo || true
-        cp Boyceta-ps4/sce_sys/keystone sce_sys/keystone || true
+        # Gera um param.sfo 100% oficial e funcional
+        mkdir -p sce_sys
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_new sce_sys/param.sfo
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_TYPE --type Integer --maxsize 4 --value 1 
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_VER --type Utf8 --maxsize 8 --value '01.00'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo ATTRIBUTE --type Integer --maxsize 4 --value 0  
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CATEGORY --type Utf8 --maxsize 4 --value 'gd'  
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-BOYC00001_00-0000000000000000'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0 
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo SYSTEM_VER --type Integer --maxsize 4 --value 0  
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Boyceta PS4'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'BOYC00001'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo VERSION --type Utf8 --maxsize 8 --value '01.00'
         
-        # Move os arquivos do jogo para a raiz do pacote (evita o bug do PkgTool)
+        # Move arquivos pro lugar certo
         cp Boyceta-ps4/index.html index.html || true
         cp Boyceta-ps4/script.js script.js || true
         cp Boyceta-ps4/style.css style.css || true
         
         mkdir -p output
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-BOYC00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/keystone sce_sys/icon0.png index.html script.js style.css"
+        # Criando sem o keystone corrompido pra garantir
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-BOYC00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css"
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
         mv *.pkg output/
 
