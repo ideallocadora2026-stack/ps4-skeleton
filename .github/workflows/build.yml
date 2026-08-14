@@ -30,16 +30,10 @@ jobs:
         ld.lld -m elf_x86_64 -pie --script $OO_PS4_TOOLCHAIN/link.x --eh-frame-hdr -L$OO_PS4_TOOLCHAIN/lib -lc -lkernel -lc++ -lSceSystemService $OO_PS4_TOOLCHAIN/lib/crt1.o main.o -o main.elf
         $OO_PS4_TOOLCHAIN/bin/linux/create-fself -in=main.elf -out=main.oelf --eboot "eboot.bin" --paid 0x3800000000000011
 
-    - name: Download create-gp4
-      run: |
-        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/create-gp4/releases/latest | grep "browser_download_url" | grep -i "linux" | head -1 | cut -d '"' -f 4)
-        curl -L "$ASSET_URL" -o /usr/local/bin/create-gp4
-        chmod +x /usr/local/bin/create-gp4
-
     - name: Create PKG
       run: |
         mkdir -p output
-        create-gp4 \
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 \
           --content-id "IV0001-BOYC00001_00-0000000000000000" \
           --title "Boyceta PS4" \
           --title-id "BOYC00001" \
