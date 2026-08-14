@@ -23,6 +23,7 @@ jobs:
         mkdir -p $HOME/OpenOrbis
         tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis --strip-components=1
         echo "OO_PS4_TOOLCHAIN=$HOME/OpenOrbis/PS4Toolchain" >> $GITHUB_ENV
+        chmod +x $HOME/OpenOrbis/PS4Toolchain/bin/linux/*
 
     - name: Build eboot.bin
       run: |
@@ -33,24 +34,13 @@ jobs:
     - name: Create PKG
       run: |
         mkdir -p output
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 \
-          --content-id "IV0001-BOYC00001_00-0000000000000000" \
-          --title "Boyceta PS4" \
-          --title-id "BOYC00001" \
-          --version "01.00" \
-          --app-ver "01.00" \
-          --target output/Boyceta-ps4.pkg \
-          eboot.bin \
-          sce_sys/param.sfo \
-          sce_sys/keystone \
-          sce_sys/icon0.png \
-          Boyceta-ps4/index.html \
-          Boyceta-ps4/script.js \
-          Boyceta-ps4/style.css
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-BOYC00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/keystone sce_sys/icon0.png Boyceta-ps4/index.html Boyceta-ps4/script.js Boyceta-ps4/style.css"
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
+        mv *.pkg output/
 
     - name: Upload PKG
       uses: actions/upload-artifact@v4
       with:
         name: Boyceta-PS4-PKG
-        path: output/Boyceta-ps4.pkg
+        path: output/*.pkg
         retention-days: 30
