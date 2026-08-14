@@ -17,34 +17,19 @@ jobs:
 
     - name: Install OpenOrbis Toolchain
       run: |
-        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest \
-          | grep "browser_download_url" | grep -v ".exe" | grep -v ".pkg" \
-          | head -1 | cut -d '"' -f 4)
-        echo "Downloading: $ASSET_URL"
+        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest | grep "browser_download_url" | grep -v ".exe" | grep -v ".pkg" | head -1 | cut -d '"' -f 4)
         curl -L "$ASSET_URL" -o toolchain.tar.gz
-        mkdir -p $HOME/OpenOrbis
-        tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis
-        echo "=== Directory structure ==="
-        ls $HOME/OpenOrbis/
-        # Find OpenOrbis.mk to get correct root
-        ORBIS_MK=$(find $HOME/OpenOrbis -name "OpenOrbis.mk" | head -1)
-        echo "Found OpenOrbis.mk at: $ORBIS_MK"
-        OPENORBIS_PATH=$(dirname $(dirname $(dirname $ORBIS_MK)))
-        echo "OPENORBIS=$OPENORBIS_PATH" >> $GITHUB_ENV
-        echo "PATH=$OPENORBIS_PATH/bin:$PATH" >> $GITHUB_ENV
-        echo "Set OPENORBIS to: $OPENORBIS_PATH"
+        tar -xzf toolchain.tar.gz -C $HOME
+        echo "OPENORBIS=$HOME/OpenOrbis" >> $GITHUB_ENV
+        echo "PATH=$HOME/OpenOrbis/bin:$PATH" >> $GITHUB_ENV
+        chmod +x $HOME/OpenOrbis/bin/* 2>/dev/null || true
 
     - name: Build eboot.bin
-      run: |
-        echo "OPENORBIS=$OPENORBIS"
-        ls $OPENORBIS/
-        make
+      run: make
 
     - name: Install create-gp4
       run: |
-        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/create-gp4/releases/latest \
-          | grep "browser_download_url" | grep -i "linux" | head -1 | cut -d '"' -f 4)
-        echo "Downloading: $ASSET_URL"
+        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/create-gp4/releases/latest | grep "browser_download_url" | grep -i "linux" | head -1 | cut -d '"' -f 4)
         curl -L "$ASSET_URL" -o /usr/local/bin/create-gp4
         chmod +x /usr/local/bin/create-gp4
 
