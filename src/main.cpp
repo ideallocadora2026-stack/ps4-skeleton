@@ -6,7 +6,8 @@
 
 int main(void) {
     const char *args[] = {
-        "pstorage:///data/self/Boyceta-ps4/index.html",
+        "com.playstation.webkit",
+        "file:///app0/index.html",
         NULL
     };
     sceSystemServiceLoadExec("com.playstation.webkit", args);
