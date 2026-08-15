@@ -53,10 +53,11 @@ jobs:
         cp Boyceta-ps4/style.css style.css || true
         
         mkdir -p output
-        # Adicionando o passcode (32 zeros) que evita a corrupção do Fake PKG
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css" --passcode "00000000000000000000000000000000"
+        
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css"
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
         mv *.pkg output/
+
 
     - name: Upload PKG
       uses: actions/upload-artifact@v4
