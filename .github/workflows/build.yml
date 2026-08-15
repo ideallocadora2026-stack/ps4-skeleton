@@ -33,25 +33,49 @@ jobs:
 
     - name: Create PKG
       run: |
-        # 1. Copiar o param.sfo e keystone ORIGINAIS que já estão com o formato perfeito do PS4
+        # 1. Copiar apenas o param.sfo original e limpo
         mkdir -p sce_sys
         cp Boyceta-ps4/sce_sys/param.sfo sce_sys/param.sfo
-        cp Boyceta-ps4/sce_sys/keystone sce_sys/keystone
         
-        # 2. Alterar APENAS o título e o ID, mantendo a estrutura 100% oficial
+        # 2. Atualizar o nome e o ID (O keystone original foi removido por incompatibilidade de ID)
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-GEOM00001_00-0000000000000000'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Geometric Wars'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'GEOM00001'
         
-        # 3. Move os arquivos do jogo
+        # 3. Pegar os arquivos do jogo
         cp Boyceta-ps4/index.html index.html || true
         cp Boyceta-ps4/script.js script.js || true
         cp Boyceta-ps4/style.css style.css || true
         
-        # 4. Criar o pacote incluindo o keystone
+        # 4. Criar o descritor GP4 perfeito manualmente com Passcode de FakePKG e SEM o keystone
+        cat << 'EOF' > GeometricWars.gp4
+        <?xml version="1.0" encoding="utf-8" standalone="yes"?>
+        <ps4_project fmt="ext" version="1.48">
+          <volume>
+            <volume_type>pkg_ps4_app</volume_type>
+            <volume_id>PS4VOLUME</volume_id>
+            <volume_ts>2026-08-15 10:00:00</volume_ts>
+            <package content_id="IV0001-GEOM00001_00-0000000000000000" passcode="00000000000000000000000000000000"/>
+          </volume>
+          <files img_no="0">
+            <file name="eboot.bin" targ_path="eboot.bin"/>
+            <dir d="sce_sys">
+              <file name="sce_sys/param.sfo" targ_path="sce_sys/param.sfo"/>
+              <file name="sce_sys/icon0.png" targ_path="sce_sys/icon0.png"/>
+            </dir>
+            <file name="index.html" targ_path="index.html"/>
+            <file name="script.js" targ_path="script.js"/>
+            <file name="style.css" targ_path="style.css"/>
+          </files>
+          <rootdir>
+            <dir d="sce_sys"/>
+          </rootdir>
+        </ps4_project>
+        EOF
+        
+        # 5. Criar o pacote e salvar
         mkdir -p output
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/keystone sce_sys/icon0.png index.html script.js style.css"
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build GeometricWars.gp4 .
         mv *.pkg output/
 
 
