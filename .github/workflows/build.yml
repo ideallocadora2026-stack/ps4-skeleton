@@ -33,18 +33,18 @@ jobs:
 
     - name: Create PKG
       run: |
-        # Gera um param.sfo 100% oficial e funcional
         mkdir -p sce_sys
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_new sce_sys/param.sfo
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_TYPE --type Integer --maxsize 4 --value 1 
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_VER --type Utf8 --maxsize 8 --value '01.00'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo ATTRIBUTE --type Integer --maxsize 4 --value 0  
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CATEGORY --type Utf8 --maxsize 4 --value 'gd'  
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-BOYC00001_00-0000000000000000'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-GEOM00001_00-0000000000000000'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0 
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo FORMAT --type Utf8 --maxsize 4 --value 'obs'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo SYSTEM_VER --type Integer --maxsize 4 --value 0  
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Boyceta PS4'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'BOYC00001'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Geometric Wars'
+        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'GEOM00001'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo VERSION --type Utf8 --maxsize 8 --value '01.00'
         
         # Move arquivos pro lugar certo
@@ -53,8 +53,8 @@ jobs:
         cp Boyceta-ps4/style.css style.css || true
         
         mkdir -p output
-        # Criando sem o keystone corrompido pra garantir
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-BOYC00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css"
+        # Adicionando o passcode (32 zeros) que evita a corrupção do Fake PKG
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css" --passcode "00000000000000000000000000000000"
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
         mv *.pkg output/
 
