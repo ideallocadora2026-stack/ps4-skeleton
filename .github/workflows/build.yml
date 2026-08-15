@@ -2,349 +2,97 @@ name: Build Geometric Wars PS4 PKG
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
-  TITLE: "Geometric Wars"
-  TITLE_ID: "GEOM00001"
-  VERSION: "01.00"
-  CONTENT_ID: "IV0000-GEOM00001_00-GEOMETRICWARS000"
+  TOOLCHAIN_VERSION: v0.5.4
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install build dependencies
+        shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-          sudo apt-get install -y \
-            clang \
-            lld \
-            curl \
-            jq \
-            ca-certificates
+          sudo apt-get install -y clang lld curl jq ca-certificates make
 
-      - name: Download OpenOrbis Toolchain v0.5.4
+      - name: Download OpenOrbis Toolchain
         shell: bash
         run: |
           set -euo pipefail
 
-          RELEASE_API="https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/tags/v0.5.4"
+          release_api="https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/tags/${TOOLCHAIN_VERSION}"
+          asset_url="$(curl -fsSL "$release_api" | jq -r '.assets[] | select(.name | test("\\.(tar\\.gz|tgz)$"; "i")) | .browser_download_url' | head -n 1)"
 
-          ASSET_URL="$(
-            curl -fsSL "$RELEASE_API" |
-            jq -r '
-              .assets[]
-              | select(.name | test("\\.(tar\\.gz|tgz)$"; "i"))
-              | .browser_download_url
-            ' |
-            head -n 1
-          )"
-
-          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "ERRO: não encontrei o pacote Linux do OpenOrbis."
+          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+            echo "OpenOrbis ${TOOLCHAIN_VERSION}: pacote Linux não encontrado."
             exit 1
           fi
 
-          echo "Baixando OpenOrbis..."
-          curl -fL "$ASSET_URL" -o toolchain.tar.gz
+          mkdir -p "$RUNNER_TEMP/openorbis"
+          curl -fL --retry 3 "$asset_url" -o "$RUNNER_TEMP/openorbis/toolchain.tar.gz"
+          tar -xzf "$RUNNER_TEMP/openorbis/toolchain.tar.gz" -C "$RUNNER_TEMP/openorbis"
 
-          mkdir -p "$HOME/OpenOrbis"
+          create_fself="$(find "$RUNNER_TEMP/openorbis" -type f -path '*/bin/linux/create-fself' -print -quit)"
+          if [ -z "$create_fself" ]; then
+            echo "create-fself não foi encontrado no pacote baixado."
+            exit 1
+          fi
 
-          tar -xzf toolchain.tar.gz \
-            -C "$HOME/OpenOrbis" \
-            --strip-components=1
+          toolchain_root="$(cd "$(dirname "$create_fself")/../.." && pwd)"
+          echo "OO_PS4_TOOLCHAIN=$toolchain_root" >> "$GITHUB_ENV"
+          chmod +x "$toolchain_root/bin/linux/"*
 
-          echo "OO_PS4_TOOLCHAIN=$HOME/OpenOrbis/PS4Toolchain" >> "$GITHUB_ENV"
+          test -x "$toolchain_root/bin/linux/create-fself"
+          test -x "$toolchain_root/bin/linux/create-gp4"
+          test -x "$toolchain_root/bin/linux/PkgTool.Core"
 
-          chmod +x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/"* || true
-
-          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/create-fself"
-          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/create-gp4"
-          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core"
-
-      - name: Verify project files
+      - name: Verify project assets
         shell: bash
         run: |
           set -euo pipefail
-
           test -s src/main.cpp
-
-          test -s Boyceta-ps4/index.html
-          test -s Boyceta-ps4/script.js
-          test -s Boyceta-ps4/style.css
-
           test -s sce_sys/icon0.png
-          test -s sce_sys/about/right.sprx
 
-          echo "Arquivos necessários encontrados."
-
-      - name: Build PS4 eboot.bin
+      - name: Download official graphics helpers
         shell: bash
         run: |
           set -euo pipefail
+          make helpers
 
-          clang++ \
-            --target=x86_64-pc-freebsd12-elf \
-            -O2 \
-            -fPIC \
-            -funwind-tables \
-            -c \
-            -isysroot "$OO_PS4_TOOLCHAIN" \
-            -isystem "$OO_PS4_TOOLCHAIN/include" \
-            -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
-            -I"$OO_PS4_TOOLCHAIN/samples/_common" \
-            -o main.o \
-            src/main.cpp
-
-          clang++ \
-            --target=x86_64-pc-freebsd12-elf \
-            -O2 \
-            -fPIC \
-            -funwind-tables \
-            -c \
-            -isysroot "$OO_PS4_TOOLCHAIN" \
-            -isystem "$OO_PS4_TOOLCHAIN/include" \
-            -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
-            -I"$OO_PS4_TOOLCHAIN/samples/_common" \
-            -o graphics.o \
-            "$OO_PS4_TOOLCHAIN/samples/_common/graphics.cpp"
-
-          test -s main.o
-          test -s graphics.o
-
-          ld.lld \
-            -m elf_x86_64 \
-            -pie \
-            --script "$OO_PS4_TOOLCHAIN/link.x" \
-            --eh-frame-hdr \
-            -L"$OO_PS4_TOOLCHAIN/lib" \
-            main.o \
-            graphics.o \
-            "$OO_PS4_TOOLCHAIN/lib/crt1.o" \
-            -lc \
-            -lkernel \
-            -lc++ \
-            -lSceSystemService \
-            -lSceVideoOut \
-            -lSceSysmodule \
-            -o main.elf
-
-          test -s main.elf
-
-          "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" \
-            -in=main.elf \
-            -out=main.oelf \
-            --eboot "eboot.bin" \
-            --paid 0x3800000000000011
-
-          test -s eboot.bin
-
-          echo "eboot.bin grafico criado corretamente."
-          ls -lh eboot.bin
-
-      - name: Prepare clean PKG directory
+      - name: Prepare required OpenOrbis module
         shell: bash
         run: |
           set -euo pipefail
+          make sce_sys/about/right.sprx
 
-          rm -rf pkgroot output
+      - name: Build eboot, GP4 and PKG
+        shell: bash
+        run: |
+          set -euo pipefail
+          make all
 
-          mkdir -p pkgroot/sce_sys/about
-          mkdir -p pkgroot/sce_module
+      - name: Collect and verify result
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p output
-
-          cp eboot.bin pkgroot/eboot.bin
-
-          cp Boyceta-ps4/index.html pkgroot/index.html
-          cp Boyceta-ps4/script.js pkgroot/script.js
-          cp Boyceta-ps4/style.css pkgroot/style.css
-
-          cp sce_sys/icon0.png pkgroot/sce_sys/icon0.png
-          cp sce_sys/about/right.sprx pkgroot/sce_sys/about/right.sprx
-
-          if [ -f sce_sys/pic0.png ]; then
-            cp sce_sys/pic0.png pkgroot/sce_sys/pic0.png
-          fi
-
-          if [ -f sce_sys/pic1.png ]; then
-            cp sce_sys/pic1.png pkgroot/sce_sys/pic1.png
-          fi
-
-          if compgen -G "sce_module/*" > /dev/null; then
-            cp -a sce_module/* pkgroot/sce_module/
-          fi
-
-          test -s pkgroot/eboot.bin
-          test -s pkgroot/index.html
-          test -s pkgroot/script.js
-          test -s pkgroot/style.css
-          test -s pkgroot/sce_sys/icon0.png
-          test -s pkgroot/sce_sys/about/right.sprx
-
-          echo "Conteúdo que entrará no PKG:"
-          find pkgroot -type f -print
-
-      - name: Create fresh param.sfo
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SFO_TOOL="$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core"
-          SFO="pkgroot/sce_sys/param.sfo"
-
-          rm -f "$SFO"
-
-          "$SFO_TOOL" sfo_new "$SFO"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            APP_TYPE \
-            --type Integer \
-            --maxsize 4 \
-            --value 1
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            APP_VER \
-            --type Utf8 \
-            --maxsize 8 \
-            --value "$VERSION"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            ATTRIBUTE \
-            --type Integer \
-            --maxsize 4 \
-            --value 0
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            CATEGORY \
-            --type Utf8 \
-            --maxsize 4 \
-            --value "gd"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            CONTENT_ID \
-            --type Utf8 \
-            --maxsize 48 \
-            --value "$CONTENT_ID"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            DOWNLOAD_DATA_SIZE \
-            --type Integer \
-            --maxsize 4 \
-            --value 0
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            SYSTEM_VER \
-            --type Integer \
-            --maxsize 4 \
-            --value 0
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            TITLE \
-            --type Utf8 \
-            --maxsize 128 \
-            --value "$TITLE"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            TITLE_ID \
-            --type Utf8 \
-            --maxsize 12 \
-            --value "$TITLE_ID"
-
-          "$SFO_TOOL" sfo_setentry "$SFO" \
-            VERSION \
-            --type Utf8 \
-            --maxsize 8 \
-            --value "$VERSION"
-
-          test -s "$SFO"
-
-          echo "Novo param.sfo criado."
-
-      - name: Build GP4 and PKG
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          CREATE_GP4="$OO_PS4_TOOLCHAIN/bin/linux/create-gp4"
-          PKG_TOOL="$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core"
-
-          cd pkgroot
-
-          FILES=(
-            "eboot.bin"
-            "sce_sys/about/right.sprx"
-            "sce_sys/param.sfo"
-            "sce_sys/icon0.png"
-            "index.html"
-            "script.js"
-            "style.css"
-          )
-
-          if [ -f "sce_sys/pic0.png" ]; then
-            FILES+=("sce_sys/pic0.png")
-          fi
-
-          if [ -f "sce_sys/pic1.png" ]; then
-            FILES+=("sce_sys/pic1.png")
-          fi
-
-          if [ -d "sce_module" ]; then
-            while IFS= read -r FILE; do
-              FILES+=("$FILE")
-            done < <(find sce_module -type f | sort)
-          fi
-
-          echo "Arquivos enviados ao create-gp4:"
-          printf '%s\n' "${FILES[@]}"
-
-          "$CREATE_GP4" \
-            -out pkg.gp4 \
-            --content-id="$CONTENT_ID" \
-            --files "${FILES[*]}"
-
-          test -s pkg.gp4
-
-          "$PKG_TOOL" pkg_build pkg.gp4 .
-
-          PKG_FILE="$(
-            find . \
-              -maxdepth 1 \
-              -type f \
-              -name '*.pkg' \
-              -size +0c \
-              -print \
-              -quit
-          )"
-
-          if [ -z "$PKG_FILE" ]; then
-            echo "ERRO: PkgTool não gerou um PKG válido."
-            exit 1
-          fi
-
-          echo "PKG produzido:"
-          ls -lh "$PKG_FILE"
-
-          cp "$PKG_FILE" ../output/Geometric-Wars.pkg
-
-          cd ..
-
-          test -s output/Geometric-Wars.pkg
-
-          sha256sum \
-            output/Geometric-Wars.pkg \
-            > output/Geometric-Wars.pkg.sha256
-
-          echo "SHA256:"
+          pkg_file="IV0000-GEOM00001_00-GEOMETRICWARS000.pkg"
+          test -s "$pkg_file"
+          cp "$pkg_file" output/Geometric-Wars.pkg
+          sha256sum output/Geometric-Wars.pkg > output/Geometric-Wars.pkg.sha256
+          ls -lh output/Geometric-Wars.pkg
           cat output/Geometric-Wars.pkg.sha256
 
       - name: Upload final PKG
@@ -356,3 +104,4 @@ jobs:
             output/Geometric-Wars.pkg.sha256
           if-no-files-found: error
           retention-days: 30
+
