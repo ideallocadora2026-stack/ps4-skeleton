@@ -1,5 +1,5 @@
 TITLE      := Geometric Wars
-VERSION    := 01.00
+VERSION    := 1.00
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
@@ -11,14 +11,15 @@ CDIR      := linux
 CCX := clang++
 LD  := ld.lld
 
-LIBS     := -lc -lkernel -lc++ -lSceSystemService -lSceVideoOut -lSceSysmodule
-CXXFLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c \
+LIBS       := -lc -lkernel -lc++ -lSceSystemService -lSceVideoOut -lSceSysmodule
+LIBMODULES := $(wildcard sce_module/*)
+CXXFLAGS   := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c \
 	-isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include \
 	-isystem $(TOOLCHAIN)/include/c++/v1 -I$(COMMONDIR)
-LDFLAGS  := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
+LDFLAGS    := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
 	-L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
 
-TOOLS       := $(TOOLCHAIN)/bin/$(CDIR)
+TOOLS        := $(TOOLCHAIN)/bin/$(CDIR)
 GRAPHICS_URL := https://raw.githubusercontent.com/OpenOrbis/OpenOrbis-PS4-Toolchain/v0.5.4/samples/_common
 
 .PHONY: all helpers clean check-toolchain
@@ -84,7 +85,7 @@ sce_sys/param.sfo: Makefile
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'
 
-pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png
+pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png $(LIBMODULES)
 	$(TOOLS)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
 
 $(CONTENT_ID).pkg: pkg.gp4
@@ -94,4 +95,3 @@ $(CONTENT_ID).pkg: pkg.gp4
 clean:
 	rm -rf $(INTDIR) $(COMMONDIR) eboot.bin pkg.gp4 sce_sys/param.sfo \
 		$(CONTENT_ID).pkg
-
