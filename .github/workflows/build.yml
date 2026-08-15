@@ -95,16 +95,32 @@ jobs:
 
           clang++ \
             --target=x86_64-pc-freebsd12-elf \
+            -O2 \
             -fPIC \
             -funwind-tables \
             -c \
             -isysroot "$OO_PS4_TOOLCHAIN" \
             -isystem "$OO_PS4_TOOLCHAIN/include" \
             -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
+            -I"$OO_PS4_TOOLCHAIN/samples/_common" \
             -o main.o \
             src/main.cpp
 
+          clang++ \
+            --target=x86_64-pc-freebsd12-elf \
+            -O2 \
+            -fPIC \
+            -funwind-tables \
+            -c \
+            -isysroot "$OO_PS4_TOOLCHAIN" \
+            -isystem "$OO_PS4_TOOLCHAIN/include" \
+            -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
+            -I"$OO_PS4_TOOLCHAIN/samples/_common" \
+            -o graphics.o \
+            "$OO_PS4_TOOLCHAIN/samples/_common/graphics.cpp"
+
           test -s main.o
+          test -s graphics.o
 
           ld.lld \
             -m elf_x86_64 \
@@ -113,11 +129,14 @@ jobs:
             --eh-frame-hdr \
             -L"$OO_PS4_TOOLCHAIN/lib" \
             main.o \
+            graphics.o \
             "$OO_PS4_TOOLCHAIN/lib/crt1.o" \
             -lc \
             -lkernel \
             -lc++ \
             -lSceSystemService \
+            -lSceVideoOut \
+            -lSceSysmodule \
             -o main.elf
 
           test -s main.elf
@@ -130,7 +149,7 @@ jobs:
 
           test -s eboot.bin
 
-          echo "eboot.bin criado corretamente."
+          echo "eboot.bin grafico criado corretamente."
           ls -lh eboot.bin
 
       - name: Prepare clean PKG directory
