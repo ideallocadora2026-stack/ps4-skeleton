@@ -19,8 +19,6 @@ extern "C" int32_t sceSystemServiceLaunchWebBrowser(const char* uri, void* param
 namespace
 {
     const int SERVER_PORT = 8088;
-    const char* WEB_ROOT = "/app0/Boyceta-ps4";
-
     bool writeAll(int fd, const void* data, size_t size)
     {
         const char* bytes = static_cast<const char*>(data);
@@ -67,11 +65,11 @@ namespace
     const char* resolveAsset(const char* uri)
     {
         if (strcmp(uri, "/") == 0 || strcmp(uri, "/index.html") == 0)
-            return "/app0/Boyceta-ps4/index.html";
+            return "/app0/index.html";
         if (strcmp(uri, "/style.css") == 0)
-            return "/app0/Boyceta-ps4/style.css";
+            return "/app0/style.css";
         if (strcmp(uri, "/script.js") == 0)
-            return "/app0/Boyceta-ps4/script.js";
+            return "/app0/script.js";
         return nullptr;
     }
 
@@ -187,9 +185,9 @@ int main(void)
 
     // Confirma que os tres arquivos do jogo realmente foram instalados.
     struct stat assetInfo;
-    if (stat("/app0/Boyceta-ps4/index.html", &assetInfo) != 0 ||
-        stat("/app0/Boyceta-ps4/style.css", &assetInfo) != 0 ||
-        stat("/app0/Boyceta-ps4/script.js", &assetInfo) != 0)
+    if (stat("/app0/index.html", &assetInfo) != 0 ||
+        stat("/app0/style.css", &assetInfo) != 0 ||
+        stat("/app0/script.js", &assetInfo) != 0)
     {
         for (;;) sceKernelSleep(1);
     }

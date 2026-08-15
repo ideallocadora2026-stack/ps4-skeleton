@@ -12,7 +12,7 @@ LD  := ld.lld
 
 LIBS       := -lc -lkernel -lc++ -lSceSystemService
 LIBMODULES := $(wildcard sce_module/*)
-WEB_ASSETS := Boyceta-ps4/index.html Boyceta-ps4/style.css Boyceta-ps4/script.js
+WEB_ASSETS := index.html style.css script.js
 SYSTEM_ART := sce_sys/icon0.png sce_sys/pic0.png sce_sys/pic1.png
 CXXFLAGS   := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c \
 	-isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include \
@@ -40,6 +40,15 @@ $(INTDIR)/main.o: src/main.cpp | $(INTDIR)
 
 $(INTDIR)/GeometricWars.elf: $(INTDIR)/main.o
 	$(LD) $^ -o $@ $(LDFLAGS)
+
+index.html: Boyceta-ps4/index.html
+	cp $< $@
+
+style.css: Boyceta-ps4/style.css
+	cp $< $@
+
+script.js: Boyceta-ps4/script.js
+	cp $< $@
 
 eboot.bin: $(INTDIR)/GeometricWars.elf
 	$(TOOLS)/create-fself -in=$< -out=$(INTDIR)/GeometricWars.oelf \
@@ -76,5 +85,5 @@ $(CONTENT_ID).pkg: pkg.gp4
 	@test -s $@
 
 clean:
-	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(WEB_ASSETS) $(CONTENT_ID).pkg
 

@@ -84,9 +84,9 @@ jobs:
         run: |
           set -euo pipefail
           make all
-          grep -q 'Boyceta-ps4/index.html' pkg.gp4
-          grep -q 'Boyceta-ps4/style.css' pkg.gp4
-          grep -q 'Boyceta-ps4/script.js' pkg.gp4
+          grep -q 'index.html' pkg.gp4
+          grep -q 'style.css' pkg.gp4
+          grep -q 'script.js' pkg.gp4
 
       - name: Validate generated PKG
         shell: bash
