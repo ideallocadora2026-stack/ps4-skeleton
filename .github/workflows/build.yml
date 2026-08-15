@@ -36,7 +36,7 @@ jobs:
           asset_url="$(curl -fsSL "$release_api" | jq -r '.assets[] | select(.name | test("\\.(tar\\.gz|tgz)$"; "i")) | .browser_download_url' | head -n 1)"
 
           if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
-            echo "OpenOrbis ${TOOLCHAIN_VERSION}: pacote Linux não encontrado."
+            echo "OpenOrbis ${TOOLCHAIN_VERSION}: pacote Linux nao encontrado."
             exit 1
           fi
 
@@ -46,7 +46,7 @@ jobs:
 
           create_fself="$(find "$RUNNER_TEMP/openorbis" -type f -path '*/bin/linux/create-fself' -print -quit)"
           if [ -z "$create_fself" ]; then
-            echo "create-fself não foi encontrado no pacote baixado."
+            echo "create-fself nao foi encontrado no pacote baixado."
             exit 1
           fi
 
@@ -58,20 +58,20 @@ jobs:
           test -x "$toolchain_root/bin/linux/create-gp4"
           test -x "$toolchain_root/bin/linux/PkgTool.Core"
 
-      - name: Verify project assets
+      - name: Verify the original Boyceta game
         shell: bash
         run: |
           set -euo pipefail
           test -s src/main.cpp
+          test -s Boyceta-ps4/index.html
+          test -s Boyceta-ps4/style.css
+          test -s Boyceta-ps4/script.js
+          node --check Boyceta-ps4/script.js
           test -s sce_sys/icon0.png
+          test -s sce_sys/pic0.png
+          test -s sce_sys/pic1.png
           test -s sce_module/libc.prx
           test -s sce_module/libSceFios2.prx
-
-      - name: Download official graphics helpers
-        shell: bash
-        run: |
-          set -euo pipefail
-          make helpers
 
       - name: Prepare required OpenOrbis module
         shell: bash
@@ -84,6 +84,9 @@ jobs:
         run: |
           set -euo pipefail
           make all
+          grep -q 'Boyceta-ps4/index.html' pkg.gp4
+          grep -q 'Boyceta-ps4/style.css' pkg.gp4
+          grep -q 'Boyceta-ps4/script.js' pkg.gp4
 
       - name: Validate generated PKG
         shell: bash
@@ -114,3 +117,4 @@ jobs:
             output/Geometric-Wars.pkg.sha256
           if-no-files-found: error
           retention-days: 30
+
