@@ -33,28 +33,24 @@ jobs:
 
     - name: Create PKG
       run: |
+        # 1. Copiar o param.sfo e keystone ORIGINAIS que já estão com o formato perfeito do PS4
         mkdir -p sce_sys
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_new sce_sys/param.sfo
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_TYPE --type Integer --maxsize 4 --value 1 
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo APP_VER --type Utf8 --maxsize 8 --value '01.00'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo ATTRIBUTE --type Integer --maxsize 4 --value 0  
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CATEGORY --type Utf8 --maxsize 4 --value 'gd'  
+        cp Boyceta-ps4/sce_sys/param.sfo sce_sys/param.sfo
+        cp Boyceta-ps4/sce_sys/keystone sce_sys/keystone
+        
+        # 2. Alterar APENAS o título e o ID, mantendo a estrutura 100% oficial
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-GEOM00001_00-0000000000000000'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0 
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo FORMAT --type Utf8 --maxsize 4 --value 'obs'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo SYSTEM_VER --type Integer --maxsize 4 --value 0  
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Geometric Wars'
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'GEOM00001'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo VERSION --type Utf8 --maxsize 8 --value '01.00'
         
-        # Move arquivos pro lugar certo
+        # 3. Move os arquivos do jogo
         cp Boyceta-ps4/index.html index.html || true
         cp Boyceta-ps4/script.js script.js || true
         cp Boyceta-ps4/style.css style.css || true
         
+        # 4. Criar o pacote incluindo o keystone
         mkdir -p output
-        
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css"
+        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/keystone sce_sys/icon0.png index.html script.js style.css"
         $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
         mv *.pkg output/
 
