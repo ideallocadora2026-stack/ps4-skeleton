@@ -1,10 +1,17 @@
-TITLE      := Boyceta PS4
-TITLE_ID   := BOYC00001
-VERSION    := 01.00
-APP_VER    := 01.00
+TITLE := Geometric Wars
+TITLE_ID := GEOM00001
+CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
-LIBS       := -lSceSystemService_stub_weak -lSceUserService_stub_weak
-SRCS       := src/main.cpp
-OBJS       := $(SRCS:.cpp=.o)
+VERSION := 01.00
+APP_VER := 01.00
 
-include $(OPENORBIS)/usr/lib/OpenOrbis.mk
+LIBS := -lc -lkernel -lc++ -lSceSystemService
+
+SRCS := src/main.cpp
+OBJS := $(SRCS:.cpp=.o)
+
+# O PKG final é criado pelo GitHub Actions em:
+# .github/workflows/build.yml
+#
+# Não reutilize Boyceta-ps4/sce_sys/param.sfo.
+# O workflow cria um param.sfo novo para cada build.
