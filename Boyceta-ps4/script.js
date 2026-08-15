@@ -1,15 +1,15 @@
 // =============================================
 //  NEON GEOMETRY — PS4 EDITION
-//  script.js  (full rewrite)
+//  script.js  (v2 — all 11 fixes applied)
 // =============================================
 
 const canvas = document.getElementById('gameCanvas');
 const ctx    = canvas.getContext('2d');
 
 const QUALITY_PROFILES = {
-    HIGH:   { label:'ALTO',  renderScale:1, glow:1.00, stars:58, gridAlpha:.070, particleStep:1, maxParticles:520, scanlines:true },
-    MEDIUM: { label:'MÉDIO', renderScale:1, glow:.62, stars:28, gridAlpha:.045, particleStep:2, maxParticles:260, scanlines:false },
-    LOW:    { label:'BAIXO', renderScale:1, glow:.20, stars:0,  gridAlpha:.025, particleStep:3, maxParticles:130, scanlines:false }
+    HIGH:   { label:'ALTO',  renderScale:1, glow:1.00, stars:90, gridAlpha:.070, particleStep:1, maxParticles:600, scanlines:true, trails:true, nebula:true, vignette:true },
+    MEDIUM: { label:'MÉDIO', renderScale:1, glow:.62, stars:28, gridAlpha:.045, particleStep:2, maxParticles:260, scanlines:false, trails:false, nebula:false, vignette:false },
+    LOW:    { label:'BAIXO', renderScale:1, glow:.20, stars:0,  gridAlpha:.025, particleStep:3, maxParticles:130, scanlines:false, trails:false, nebula:false, vignette:false }
 };
 let graphicsQuality = 'HIGH';
 
@@ -57,6 +57,8 @@ const UI = {
     previewCanvas:  document.getElementById('character-preview'),
     previewSkin:    document.getElementById('preview-skin'),
     previewHat:     document.getElementById('preview-hat'),
+    waveDisplay:    document.getElementById('wave-display'),
+    shopPlayerLabel: document.getElementById('shop-player-label'),
     menuBtns: {
         MENU:     ()=> Array.from(document.querySelectorAll('#main-menu-options .menu-btn')),
         PAUSED:   ()=> Array.from(document.querySelectorAll('#pause-menu-options .menu-btn')),
@@ -76,6 +78,7 @@ let lobbyCountdown = -1;
 let lobbyPadSignature = '';
 let skinTab        = 'skins';
 let settingsReturnState = STATE.MENU;
+let resetConfirmPending = false;
 
 // ── CONSTANTS ────────────────────────────────
 const PColors    = ['#2277ff','#ff2244','#00ff88','#bb44ff'];
@@ -127,10 +130,17 @@ const Game = {
     enemies:[], boss:null, bossDefeated:false,
     particles:[], drops:[], floatingTexts:[],
     enemyTheme:{edges:0, color:'#ff2244'},
-    isSolo:true, lastTime:0
+    isSolo:true, lastTime:0,
+    totalKills:0  // FIX 4: contador global para spawnar coração a cada 50 kills
 };
 
-let cosmeticStore = {ownedSkins:['default'],ownedHats:['none'],activeSkin:'default',activeHat:'none',wallet:{silver:0}};
+// FIX 7: cosmeticStore com loadouts por jogador
+let cosmeticStore = {
+    ownedSkins:['default'],
+    ownedHats:['none'],
+    playerLoadouts:{},   // { padIndex: { activeSkin, activeHat } }
+    wallet:{silver:0}
+};
 let defaultControls = {keys:{...DEFAULT_KEYS},sensMove:1.0,rumbleStr:1.0};
 let rumbleStrength = 1.0;
 
@@ -154,6 +164,18 @@ function getWallet(){
     return cosmeticStore.wallet;
 }
 
+// FIX 7: helpers de loadout por jogador
+function getPlayerLoadout(padIndex){
+    if(!cosmeticStore.playerLoadouts) cosmeticStore.playerLoadouts={};
+    if(!cosmeticStore.playerLoadouts[padIndex]){
+        cosmeticStore.playerLoadouts[padIndex]={activeSkin:'default', activeHat:'none'};
+    }
+    const lo=cosmeticStore.playerLoadouts[padIndex];
+    if(!cosmeticStore.ownedSkins.includes(lo.activeSkin)) lo.activeSkin='default';
+    if(!cosmeticStore.ownedHats.includes(lo.activeHat)) lo.activeHat='none';
+    return lo;
+}
+
 function normalizeCosmeticStore(data){
     const skinIds=new Set(ALL_SKINS.map(item=>item.id));
     const hatIds=new Set(ALL_HATS.map(item=>item.id));
@@ -161,11 +183,20 @@ function normalizeCosmeticStore(data){
     const store=data && typeof data==='object' ? data : {};
     const ownedSkins=clean(store.ownedSkins,skinIds,['default']);
     const ownedHats=clean(store.ownedHats,hatIds,['none']);
+    // Migra loadouts
+    const rawLoadouts = store.playerLoadouts && typeof store.playerLoadouts==='object' ? store.playerLoadouts : {};
+    const playerLoadouts={};
+    for(const pi of Object.keys(rawLoadouts)){
+        const lo=rawLoadouts[pi]||{};
+        playerLoadouts[pi]={
+            activeSkin: ownedSkins.includes(lo.activeSkin)?lo.activeSkin:'default',
+            activeHat:  ownedHats.includes(lo.activeHat)?lo.activeHat:'none'
+        };
+    }
     return {
         ownedSkins,
         ownedHats,
-        activeSkin:ownedSkins.includes(store.activeSkin)?store.activeSkin:'default',
-        activeHat:ownedHats.includes(store.activeHat)?store.activeHat:'none',
+        playerLoadouts,
         wallet:{silver:Math.max(0,Math.floor(Number(store.wallet && store.wallet.silver)||0))}
     };
 }
@@ -262,9 +293,53 @@ class Coin {
         const b=Math.sin(this.bob)*3;
         c.fillStyle=this.color; c.shadowColor=this.color; c.shadowBlur=effectBlur(12);
         c.beginPath(); c.arc(this.x,this.y+b,this.radius,0,Math.PI*2); c.fill();
-        // Highlight
         c.fillStyle='rgba(255,255,255,0.45)';
         c.beginPath(); c.arc(this.x-2,this.y+b-2,this.radius*0.35,0,Math.PI*2); c.fill();
+        c.restore();
+    }
+}
+
+// FIX 4: Heart drop que cura 30% do HP
+class HeartDrop {
+    constructor(x,y){
+        this.x=x; this.y=y; this.radius=12; this.life=12000;
+        this.bob=Math.random()*Math.PI*2; this.pulseT=0;
+    }
+    update(dt){
+        this.life-=dt; this.bob+=dt/400; this.pulseT+=dt/400;
+        let cl=null, md=Infinity;
+        Game.players.forEach(p=>{ if(p.hp<=0)return; const d=Vect.dist(this.x,this.y,p.x,p.y); if(d<md){md=d;cl=p;} });
+        if(cl && md<200){ const a=Vect.angle(this.x,this.y,cl.x,cl.y); this.x+=Math.cos(a)*350*dt/1000; this.y+=Math.sin(a)*350*dt/1000; }
+        if(cl && md < cl.radius+this.radius){
+            const heal=Math.floor(cl.maxHp*0.3);
+            cl.hp=Math.min(cl.maxHp, cl.hp+heal);
+            floatText(cl.x,cl.y-30,'+'+heal+' INTEGRIDADE','#ff6699');
+            rumble(cl.padIndex,200,0.4,0.3);
+            for(let i=0;i<14;i++) Game.particles.push(new Particle(cl.x,cl.y,'#ff6699',(Math.random()-.5)*12,(Math.random()-.5)*12,2.5,0.93));
+            cl.updateHUD();
+            this.life=0;
+        }
+    }
+    draw(c){
+        if(this.life<2000 && Math.floor(Date.now()/120)%2===0) return;
+        const b=Math.sin(this.bob)*3;
+        const pulse=1+Math.sin(this.pulseT*2)*0.14;
+        const r=this.radius*pulse;
+        c.save();
+        c.shadowColor='#ff4488'; c.shadowBlur=effectBlur(18);
+        // Desenha coração
+        c.fillStyle='#ff3377';
+        c.beginPath();
+        const cx=this.x, cy=this.y+b;
+        c.moveTo(cx, cy+r*0.3);
+        c.bezierCurveTo(cx, cy-r*0.1, cx-r*1.05, cy-r*0.6, cx-r, cy-r*0.1);
+        c.bezierCurveTo(cx-r, cy-r*0.75, cx-r*0.35, cy-r, cx, cy-r*0.25);
+        c.bezierCurveTo(cx+r*0.35, cy-r, cx+r, cy-r*0.75, cx+r, cy-r*0.1);
+        c.bezierCurveTo(cx+r*1.05, cy-r*0.6, cx, cy-r*0.1, cx, cy+r*0.3);
+        c.closePath(); c.fill();
+        // Highlight
+        c.fillStyle='rgba(255,255,255,0.4)';
+        c.beginPath(); c.arc(cx-r*0.3,cy-r*0.1,r*0.22,0,Math.PI*2); c.fill();
         c.restore();
     }
 }
@@ -296,14 +371,20 @@ class Player {
         this.x=canvas.width/2+(pi*50-75); this.y=canvas.height/2;
         this.camera={x:this.x, y:this.y};
         this.radius=18; this.hp=100; this.maxHp=100;
-        this.coins=0; this.score=0;
+        this.coins=0;
+        this.score=0;  // mantido internamente para placar final
+        this.kills=0;  // FIX 10: contador de kills individual
         this.lastShot=0; this.deadzone=0.18; this.sensMove=defaultControls.sensMove; this.rumbleStr=defaultControls.rumbleStr;
         this.hudId='hud-p'+pi;
-        this.activeSkin=cosmeticStore.activeSkin; this.activeHat=cosmeticStore.activeHat;
+        // FIX 7: usa loadout individual
+        const lo=getPlayerLoadout(pi);
+        this.activeSkin=lo.activeSkin; this.activeHat=lo.activeHat;
         this.skinAnim=0;
         this.keys={...defaultControls.keys};
         this.stats={fireRate:160, damageMulti:1, skillDuration:3000, skillCooldownMax:12000, skillCooldown:0, costFire:15, costMulti:40, costSkill:25};
         this.timeStopActive=false; this.timeStopTimer=0; this.invincible=0;
+        // FIX 5: revive
+        this.pendingRevive=false;
     }
 
     update(dt){
@@ -331,20 +412,28 @@ class Player {
             if(Game.boss.phase===1){ Game.boss.weapons.forEach(w=>{ if(!w.active)return; const wx=Game.boss.x+w.relX,wy=Game.boss.y+w.relY,d=Vect.dist(this.x,this.y,wx,wy); if(d<md){md=d;t={x:wx,y:wy};} }); }
             else { const d=Vect.dist(this.x,this.y,Game.boss.x,Game.boss.y); if(d<md)t={x:Game.boss.x,y:Game.boss.y}; }
         }
-        if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); Game.projectiles.push({x:this.x,y:this.y,owner:this,vx:Math.cos(a)*820,vy:Math.sin(a)*820,radius:5,color:this.color,damage:20*this.stats.damageMulti}); }
+        if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); Game.projectiles.push({x:this.x,y:this.y,owner:this,vx:Math.cos(a)*820,vy:Math.sin(a)*820,radius:5,color:this.color,damage:20*this.stats.damageMulti,trail:[]}); }
     }
 
     draw(c){
-        if(this.hp<=0) return;
+        if(this.hp<=0){
+            // FIX 5: desenha ícone de "aguardando revive"
+            c.save();
+            c.globalAlpha=0.4+Math.sin(Date.now()/300)*0.2;
+            c.strokeStyle=this.color; c.lineWidth=2; c.shadowColor=this.color; c.shadowBlur=effectBlur(10);
+            c.beginPath(); c.arc(this.x,this.y,this.radius+5,0,Math.PI*2); c.stroke();
+            c.fillStyle=this.color; c.font='bold 11px Rajdhani';
+            c.textAlign='center'; c.fillText('REVIVE',this.x,this.y+4);
+            c.restore();
+            return;
+        }
         if(this.invincible>0 && Math.floor(Date.now()/60)%2===0) return;
         c.save(); c.translate(this.x,this.y);
         const sk=this.activeSkin, ht=this.activeHat;
 
-        // Aura
         if(sk==='aura'){ const g=c.createRadialGradient(0,0,this.radius,0,0,this.radius*2.5); g.addColorStop(0,this.color+'55'); g.addColorStop(1,'transparent'); c.fillStyle=g; c.beginPath(); c.arc(0,0,this.radius*2.5,0,Math.PI*2); c.fill(); }
         if(sk==='ghost') c.globalAlpha=0.5;
 
-        // Body
         if(sk==='plasma'){
             const pg=c.createRadialGradient(-6,-8,2,0,0,this.radius);
             pg.addColorStop(0,'#ffffff'); pg.addColorStop(.32,'#55e8ff'); pg.addColorStop(1,this.color);
@@ -356,13 +445,10 @@ class Player {
         } else c.fillStyle=this.color;
         c.shadowColor=this.color; c.shadowBlur=effectBlur(20);
         c.beginPath(); c.arc(0,0,this.radius,0,Math.PI*2); c.fill(); c.shadowBlur=0;
-        // Inner ring
         c.strokeStyle='rgba(255,255,255,0.5)'; c.lineWidth=2;
         c.beginPath(); c.arc(0,0,this.radius-6,0,Math.PI*2); c.stroke();
-        // Direction dot
         c.fillStyle='rgba(255,255,255,0.9)'; c.beginPath(); c.arc(0,-this.radius+4,3,0,Math.PI*2); c.fill();
 
-        // Skins
         if(sk==='neon'){ c.strokeStyle=this.color; c.lineWidth=3; c.shadowColor=this.color; c.shadowBlur=effectBlur(12); c.beginPath(); c.arc(0,0,this.radius+5,0,Math.PI*2); c.stroke(); c.shadowBlur=0; }
         if(sk==='shield'){ const a=this.skinAnim; c.strokeStyle=this.color+'cc'; c.lineWidth=4; c.shadowColor=this.color; c.shadowBlur=effectBlur(10); c.beginPath(); c.arc(0,0,this.radius+8,a,a+Math.PI); c.stroke(); c.beginPath(); c.arc(0,0,this.radius+8,a+Math.PI,a+Math.PI*2); c.stroke(); c.shadowBlur=0; }
         if(sk==='spike'){ c.fillStyle=this.color; c.shadowColor=this.color; c.shadowBlur=effectBlur(8); for(let i=0;i<6;i++){ const a=this.skinAnim+i*Math.PI*2/6; c.beginPath(); c.moveTo(Math.cos(a)*(this.radius+1),Math.sin(a)*(this.radius+1)); c.lineTo(Math.cos(a+0.2)*(this.radius-3),Math.sin(a+0.2)*(this.radius-3)); c.lineTo(Math.cos(a-0.2)*(this.radius-3),Math.sin(a-0.2)*(this.radius-3)); c.fill(); } c.shadowBlur=0; }
@@ -373,7 +459,6 @@ class Player {
         if(sk==='void'){ c.fillStyle='#200438'; c.beginPath(); c.arc(0,0,this.radius-7,0,Math.PI*2); c.fill(); c.strokeStyle='#d64cff';c.lineWidth=2;c.shadowColor='#9a1fff';c.shadowBlur=effectBlur(14);c.beginPath();c.arc(0,0,this.radius+5,0,Math.PI*2);c.stroke();c.shadowBlur=0; }
         if(sk==='spectrum'){ c.strokeStyle='#fff';c.lineWidth=2;c.shadowColor='#fff';c.shadowBlur=effectBlur(12);c.beginPath();c.arc(0,0,this.radius+5,0,Math.PI*2);c.stroke();c.shadowBlur=0; }
 
-        // Hats
         if(ht==='crown'){ c.fillStyle='#ffd700'; c.shadowColor='#ffd700'; c.shadowBlur=8; c.beginPath(); c.moveTo(-12,-this.radius-2); c.lineTo(-12,-this.radius-14); c.lineTo(-6,-this.radius-8); c.lineTo(0,-this.radius-14); c.lineTo(6,-this.radius-8); c.lineTo(12,-this.radius-14); c.lineTo(12,-this.radius-2); c.fill(); c.shadowBlur=0; }
         if(ht==='tophat'){ c.fillStyle='#111'; c.strokeStyle='#555'; c.lineWidth=1; c.fillRect(-12,-this.radius-20,24,16); c.strokeRect(-12,-this.radius-20,24,16); c.fillRect(-15,-this.radius-4,30,4); c.strokeRect(-15,-this.radius-4,30,4); }
         if(ht==='halo'){ c.strokeStyle='#ffd700'; c.lineWidth=3; c.shadowColor='#ffd700'; c.shadowBlur=14; c.beginPath(); c.ellipse(0,-this.radius-8,10,4,0,0,Math.PI*2); c.stroke(); c.shadowBlur=0; }
@@ -394,7 +479,12 @@ class Player {
         rumble(this.padIndex,250,0.7,1.0); Game.cameraShake=14;
         for(let i=0;i<12;i++) Game.particles.push(new Particle(this.x,this.y,'#ff2244',(Math.random()-.5)*14,(Math.random()-.5)*14,3,0.95));
         this.updateHUD();
-        if(this.hp<=0){ floatText(this.x,this.y,'SISTEMA DESLIGADO',this.color); checkGameOver(); }
+        if(this.hp<=0){
+            this.hp=0;
+            floatText(this.x,this.y,'SISTEMA DESLIGADO',this.color);
+            this.pendingRevive=true;
+            checkGameOver();
+        }
     }
 
     activateTimeStop(){
@@ -407,22 +497,20 @@ class Player {
     updateHUD(){
         const h=document.getElementById(this.hudId); if(!h) return;
         const q=s=>h.querySelector(s);
-        if(q('.hud-score')) q('.hud-score').textContent=this.score;
+        // FIX 10: kills em vez de score
+        if(q('.hud-kills')) q('.hud-kills').textContent=this.kills;
         if(q('.hud-gold'))  q('.hud-gold').textContent=this.coins;
         if(q('.hud-silver'))q('.hud-silver').textContent=getWallet().silver;
         if(q('.hp-fill'))   q('.hp-fill').style.width=Math.max(0,(this.hp/this.maxHp)*100)+'%';
 
-        // ─ COOLDOWN BAR (fixed logic) ─
         const cdF=q('.cd-fill');
         if(cdF){
             let pct;
             if(this.timeStopActive){
-                // Active: bar drains from 100% → 0%
                 pct = Math.max(0,(this.timeStopTimer/this.stats.skillDuration)*100);
                 cdF.style.background='#ff2244';
                 cdF.style.boxShadow='0 0 6px #ff2244';
             } else {
-                // Recharging: bar fills 0% → 100%
                 pct = this.stats.skillCooldownMax>0
                     ? Math.max(0, 100-(this.stats.skillCooldown/this.stats.skillCooldownMax)*100)
                     : 100;
@@ -435,6 +523,10 @@ class Player {
         if(q('.upg1-cost')) q('.upg1-cost').textContent=this.stats.costFire+' G';
         if(q('.upg2-cost')) q('.upg2-cost').textContent=this.stats.costMulti+' G';
         if(q('.upg3-cost')) q('.upg3-cost').textContent=this.stats.costSkill+' G';
+
+        // FIX 5: exibe estado morto no HUD
+        const panel=q('.hud-panel');
+        if(panel) panel.style.opacity = this.hp<=0 ? '0.35' : '1';
     }
 
     buyUpgrade(t){
@@ -451,24 +543,25 @@ class Enemy {
         this.x=x; this.y=y; this.hp=hp; this.maxHp=hp; this.speed=spd;
         this.color=Game.enemyTheme.color; this.edges=Game.enemyTheme.edges;
         this.radius=15+Math.random()*4; this.angle=Math.random()*Math.PI*2; this.rotSpd=(Math.random()-.5)*2;
+        this.pulseT=Math.random()*Math.PI*2;
     }
     update(dt){
         if(Game.players.some(p=>p.timeStopActive)) return;
         let t=null, md=Infinity;
         Game.players.forEach(p=>{ if(p.hp<=0)return; const d=Vect.dist(this.x,this.y,p.x,p.y); if(d<md){md=d;t=p;} });
         if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*this.speed*dt/1000; this.y+=Math.sin(a)*this.speed*dt/1000; }
-        this.angle+=this.rotSpd*dt/1000; resolveWall(this);
+        this.angle+=this.rotSpd*dt/1000; this.pulseT+=dt/500; resolveWall(this);
     }
     draw(c){
         c.save(); c.translate(this.x,this.y); c.rotate(this.angle);
-        c.shadowColor=this.color; c.shadowBlur=effectBlur(15); c.fillStyle=this.color; c.beginPath();
+        // FIX 11: brilho pulsante mais forte no modo ALTO
+        const pulse = graphicsQuality==='HIGH' ? 1+Math.sin(this.pulseT)*0.18 : 1;
+        c.shadowColor=this.color; c.shadowBlur=effectBlur(15*pulse); c.fillStyle=this.color; c.beginPath();
         if(this.edges===0){ c.rect(-this.radius,-this.radius,this.radius*2,this.radius*2); }
         else{ for(let i=0;i<this.edges;i++){ const a=i*Math.PI*2/this.edges-Math.PI/2; if(i===0)c.moveTo(Math.cos(a)*this.radius,Math.sin(a)*this.radius); else c.lineTo(Math.cos(a)*this.radius,Math.sin(a)*this.radius); } c.closePath(); }
         c.fill(); c.shadowBlur=0;
-        // Inner highlight
         c.fillStyle='rgba(255,255,255,0.12)'; c.beginPath(); c.arc(-this.radius*.2,-this.radius*.2,this.radius*.3,0,Math.PI*2); c.fill();
         c.restore();
-        // HP bar
         if(this.hp<this.maxHp){ const bw=this.radius*2,bh=4,bx=this.x-this.radius,by=this.y-this.radius-10; c.fillStyle='rgba(0,0,0,.6)'; c.fillRect(bx,by,bw,bh); c.fillStyle='hsl('+(120*(this.hp/this.maxHp))+',100%,50%)'; c.fillRect(bx,by,bw*(this.hp/this.maxHp),bh); }
     }
 }
@@ -487,6 +580,8 @@ class Boss {
             {id:2,relX:82,relY:47,hp:500*d,maxHp:500*d,active:true},
             {id:3,relX:-82,relY:47,hp:500*d,maxHp:500*d,active:true}
         ];
+        // FIX 9: estado extra para habilidades únicas
+        this.teleportCooldown=0; this.spiralAngle=0;
         UI.bossHud.classList.remove('hidden'); this.updateUI();
     }
     update(dt){
@@ -495,19 +590,55 @@ class Boss {
         this.angle+=1.6*dt/1000; this.atk+=dt;
         let t=null, md=Infinity;
         Game.players.forEach(p=>{ if(p.hp<=0)return; const d=Vect.dist(this.x,this.y,p.x,p.y); if(d<md){md=d;t=p;} });
+
         if(this.phase===1){
             if(this.atk>1400){ this.atk=0; this.weapons.forEach(w=>{ if(!w.active||!t)return; const wx=this.x+Math.cos(this.angle)*w.relX-Math.sin(this.angle)*w.relY, wy=this.y+Math.sin(this.angle)*w.relX+Math.cos(this.angle)*w.relY, a=Vect.angle(wx,wy,t.x,t.y); Game.enemyProjectiles.push({x:wx,y:wy,vx:Math.cos(a)*320,vy:Math.sin(a)*320,radius:7,color:'#ff7700'}); }); }
             if(this.weapons.every(w=>!w.active)) this.setPhase(2);
+
+        // FIX 9: Fase 2 — comportamento único por forma
         } else if(this.phase===2){
-            this.x+=Math.cos(this.angle)*1.8;
-            if(this.atk>280){ this.atk=0; for(let i=0;i<4;i++){ const a=this.angle*2+Math.PI/2*i; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*260,vy:Math.sin(a)*260,radius:9,color:this.trueColor}); } }
+            if(this.shape==='triangle'){
+                // Triângulo: 3 projéteis em leque
+                if(this.atk>900 && t){ this.atk=0; const base=Vect.angle(this.x,this.y,t.x,t.y); for(let i=-1;i<=1;i++){ const a=base+i*0.35; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*340,vy:Math.sin(a)*340,radius:8,color:this.trueColor}); } }
+            } else if(this.shape==='square'){
+                // Quadrado: paredes em cruz (4 direções fixas)
+                this.x+=Math.cos(this.angle)*1.4;
+                if(this.atk>700){ this.atk=0; for(let i=0;i<4;i++){ const a=Math.PI/2*i; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*280,vy:Math.sin(a)*280,radius:9,color:this.trueColor}); Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*200,vy:Math.sin(a)*200,radius:7,color:this.trueColor}); } }
+            } else if(this.shape==='circle'){
+                // Círculo: padrão original (omnidirecional)
+                this.x+=Math.cos(this.angle)*1.8;
+                if(this.atk>280){ this.atk=0; for(let i=0;i<4;i++){ const a=this.angle*2+Math.PI/2*i; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*260,vy:Math.sin(a)*260,radius:9,color:this.trueColor}); } }
+            } else if(this.shape==='cross'){
+                // Cruz: 2 barreiras horizontais alternadas
+                if(this.atk>1100){ this.atk=0; for(let row=-1;row<=1;row+=2){ for(let i=-5;i<=5;i++){ const ox=i*80; Game.enemyProjectiles.push({x:this.x+ox,y:this.y,vx:0,vy:row*300,radius:8,color:this.trueColor}); } } }
+            }
+
+        // FIX 9: Fase 3 — comportamento único por forma
         } else if(this.phase===3){
-            if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*130*dt/1000; this.y+=Math.sin(a)*130*dt/1000; }
-            if(this.atk>750){ this.atk=0; const a=t?Vect.angle(this.x,this.y,t.x,t.y):0; for(let i=0;i<3;i++) Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a+(i-1)*.28)*470,vy:Math.sin(a+(i-1)*.28)*470,radius:11,color:'#ff2244'}); }
+            if(this.shape==='triangle'){
+                // Triângulo: teleporta perto do jogador a cada 4s
+                this.teleportCooldown-=dt;
+                if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*100*dt/1000; this.y+=Math.sin(a)*100*dt/1000; }
+                if(this.teleportCooldown<=0 && t){ this.teleportCooldown=4000; const a=Math.random()*Math.PI*2; this.x=t.x+Math.cos(a)*120; this.y=t.y+Math.sin(a)*120; Game.cameraShake=20; for(let i=0;i<20;i++) Game.particles.push(new Particle(this.x,this.y,this.trueColor,(Math.random()-.5)*30,(Math.random()-.5)*30,3)); }
+                if(this.atk>700){ this.atk=0; const a=t?Vect.angle(this.x,this.y,t.x,t.y):0; for(let i=0;i<3;i++) Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a+(i-1)*.28)*490,vy:Math.sin(a+(i-1)*.28)*490,radius:11,color:'#ff2244'}); }
+            } else if(this.shape==='square'){
+                // Quadrado: gira rapidamente e dispara em espiral
+                this.spiralAngle+=4.5*dt/1000;
+                if(this.atk>200){ this.atk=0; for(let i=0;i<2;i++){ const a=this.spiralAngle+i*Math.PI; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*400,vy:Math.sin(a)*400,radius:9,color:this.trueColor}); } }
+                if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*80*dt/1000; this.y+=Math.sin(a)*80*dt/1000; }
+            } else if(this.shape==='circle'){
+                // Círculo: persegue + rajada de 5
+                if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*130*dt/1000; this.y+=Math.sin(a)*130*dt/1000; }
+                if(this.atk>650){ this.atk=0; const a=t?Vect.angle(this.x,this.y,t.x,t.y):0; for(let i=0;i<5;i++) Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a+(i-2)*.22)*470,vy:Math.sin(a+(i-2)*.22)*470,radius:10,color:'#ff2244'}); }
+            } else if(this.shape==='cross'){
+                // Cruz: 8 direções simultâneas
+                if(t){ const a=Vect.angle(this.x,this.y,t.x,t.y); this.x+=Math.cos(a)*90*dt/1000; this.y+=Math.sin(a)*90*dt/1000; }
+                if(this.atk>800){ this.atk=0; for(let i=0;i<8;i++){ const a=i*Math.PI/4; Game.enemyProjectiles.push({x:this.x,y:this.y,vx:Math.cos(a)*440,vy:Math.sin(a)*440,radius:10,color:this.trueColor}); } }
+            }
         }
     }
     setPhase(p){
-        this.phase=p; Game.cameraShake=30;
+        this.phase=p; Game.cameraShake=30; this.atk=0; this.teleportCooldown=4000;
         if(p===2){ this.color=this.trueColor; UI.bossPhase.textContent='FASE 2: NÚCLEO EXPOSTO'; floatText(this.x,this.y,'SISTEMA COMPROMETIDO!',this.color); }
         else if(p===3){ this.color='#ff2244'; UI.bossPhase.textContent='FASE 3: PROTOCOLO DE FÚRIA'; floatText(this.x,this.y,'MODO FÚRIA!','#ff2244'); }
         for(let i=0;i<60;i++) Game.particles.push(new Particle(this.x,this.y,this.color,(Math.random()-.5)*35,(Math.random()-.5)*35,Math.random()*5+2));
@@ -561,10 +692,12 @@ class Boss {
 }
 
 // ── SAVE / LOAD ──────────────────────────────
+// FIX 1: Save não inclui mais stats (upgrades de mid-game)
 function saveGame(showNotice=true){
     try{
-        localStorage.setItem('ngps4v3', JSON.stringify({
-            players: Game.players.map(p=>({padIndex:p.padIndex,stats:p.stats,keys:p.keys,sensMove:p.sensMove,rumbleStr:p.rumbleStr})),
+        localStorage.setItem('ngps4v4', JSON.stringify({
+            // FIX 1: apenas keys, sensibilidade e rumble por jogador (sem stats)
+            playerControls: Game.players.map(p=>({padIndex:p.padIndex,keys:p.keys,sensMove:p.sensMove,rumbleStr:p.rumbleStr})),
             cosmetics: normalizeCosmeticStore(cosmeticStore),
             controlDefaults: defaultControls,
             settings:{graphicsQuality}
@@ -573,13 +706,29 @@ function saveGame(showNotice=true){
             UI.saveNote.classList.remove('hidden');
             setTimeout(()=>UI.saveNote.classList.add('hidden'), 1500);
         }
-    }catch(e){
-        // O jogo continua funcionando se o navegador bloquear armazenamento local.
-    }
+    }catch(e){}
 }
+
+// FIX 2: Reset de save
+function resetSave(){
+    try{ localStorage.removeItem('ngps4v4'); }catch(e){}
+    cosmeticStore={ownedSkins:['default'],ownedHats:['none'],playerLoadouts:{},wallet:{silver:0}};
+    defaultControls={keys:{...DEFAULT_KEYS},sensMove:1.0,rumbleStr:1.0};
+    rumbleStrength=1.0;
+    graphicsQuality='HIGH';
+    document.body.dataset.graphics='high';
+    if(UI.saveNote){
+        UI.saveNote.textContent='SAVE RESETADO';
+        UI.saveNote.classList.remove('hidden');
+        setTimeout(()=>{ UI.saveNote.textContent='SALVANDO...'; UI.saveNote.classList.add('hidden'); },1800);
+    }
+    floatText(canvas.width/2, canvas.height/2, 'PERFIL RESETADO', '#ff2244');
+    resetConfirmPending=false;
+}
+
 function loadSave(){
     try{
-        const d=JSON.parse(localStorage.getItem('ngps4v3'));
+        const d=JSON.parse(localStorage.getItem('ngps4v4'));
         if(!d) return;
         cosmeticStore=normalizeCosmeticStore(d.cosmetics);
         if(d.controlDefaults) copyToDefaultControls(d.controlDefaults);
@@ -588,14 +737,16 @@ function loadSave(){
     }catch(e){}
 }
 loadSave();
+
+// FIX 1: aplica apenas controles, não stats
 function applyPlayerSave(p){
-    const d=loadSave._data; if(!d||!d.players) return;
-    const s=d.players.find(x=>x.padIndex===p.padIndex);
-    if(s){
-        p.stats={...p.stats,...(s.stats||{})};
-        p.keys={...DEFAULT_KEYS,...(s.keys||{})};
-        p.sensMove=Math.min(3,Math.max(.5,Number(s.sensMove)||p.sensMove));
-        p.rumbleStr=Math.min(2,Math.max(0,Number(s.rumbleStr)||p.rumbleStr));
+    const d=loadSave._data; if(!d) return;
+    // Controles individuais do save
+    const pc=(d.playerControls||[]).find(x=>x.padIndex===p.padIndex);
+    if(pc){
+        p.keys={...DEFAULT_KEYS,...(pc.keys||{})};
+        p.sensMove=Math.min(3,Math.max(.5,Number(pc.sensMove)||p.sensMove));
+        p.rumbleStr=Math.min(2,Math.max(0,Number(pc.rumbleStr)||p.rumbleStr));
     }
 }
 
@@ -607,8 +758,21 @@ function startGame(){
     Game.enemies=[]; Game.projectiles=[]; Game.enemyProjectiles=[]; Game.particles=[]; Game.drops=[]; Game.floatingTexts=[];
     Game.boss=null; Game.bossDefeated=false; Game.enemyTheme={edges:0,color:'#ff2244'};
     Game.map={minX:0,minY:0,maxX:canvas.width,maxY:canvas.height}; Game.walls=[];
-    Game.players.forEach(p=>{ p.hp=p.maxHp; p.timeStopActive=false; p.stats.skillCooldown=0; p.activeSkin=cosmeticStore.activeSkin; p.activeHat=cosmeticStore.activeHat; });
+    Game.totalKills=0; // FIX 4: reseta o contador de kills
+    // FIX 7: usa loadout individual de cada jogador
+    Game.players.forEach(p=>{
+        p.hp=p.maxHp; p.timeStopActive=false; p.stats.skillCooldown=0;
+        p.pendingRevive=false; p.kills=0;
+        const lo=getPlayerLoadout(p.padIndex);
+        p.activeSkin=lo.activeSkin; p.activeHat=lo.activeHat;
+    });
+    updateWaveDisplay();
     rebuildHUD(); changeState(STATE.PLAYING); startWaveAnn();
+}
+
+// FIX 10: atualiza exibição da onda
+function updateWaveDisplay(){
+    if(UI.waveDisplay) UI.waveDisplay.textContent='ONDA '+Game.wave;
 }
 
 function rebuildHUD(){
@@ -624,12 +788,13 @@ function rebuildHUD(){
         const h=document.createElement('div');
         h.id=p.hudId; h.className='player-hud-container';
         h.style.borderColor=p.color+'44';
+        // FIX 10: exibe kills em vez de score (estrela)
         h.innerHTML=
             '<div class="hud-panel">'+
               '<div class="hud-left">'+
                 '<div class="hud-card">'+
                   '<div class="hud-player-name" style="color:'+p.color+'">JOGADOR '+(i+1)+'</div>'+
-                  '<div class="hud-stat">&#11088; <span class="hud-score">0</span></div>'+
+                  '<div class="hud-stat" style="color:#ff6699">&#9760; <span class="hud-kills">0</span> KILLS</div>'+
                   '<div class="hud-stat" style="color:#ffd700">&#9711; <span class="hud-gold">0</span> <span style="color:#b8c4d4;margin-left:8px;">&#9830; <span class="hud-silver">0</span></span></div>'+
                 '</div>'+
                 '<div class="hud-card">'+
@@ -664,23 +829,49 @@ function startWaveAnn(){
     setTimeout(()=>UI.announce.classList.add('hidden'),2500);
 }
 
-function nextWave(){ Game.wave++; Game.timeSinceLastWave=0; if(Game.wave%5===0) Game.boss=new Boss(); startWaveAnn(); }
+// FIX 5: revive ao iniciar próxima onda
+function nextWave(){
+    Game.wave++;
+    Game.timeSinceLastWave=0;
+    // FIX 5: revive jogadores mortos
+    Game.players.forEach(p=>{
+        if(p.hp<=0 && p.pendingRevive){
+            p.hp=Math.floor(p.maxHp*0.5);
+            p.pendingRevive=false;
+            p.invincible=2000;
+            floatText(p.x,p.y,'SISTEMA RELIGADO!',p.color);
+            for(let i=0;i<20;i++) Game.particles.push(new Particle(p.x,p.y,p.color,(Math.random()-.5)*20,(Math.random()-.5)*20,3,0.92));
+            rumble(p.padIndex,400,0.5,0.7);
+            p.updateHUD();
+        }
+    });
+    updateWaveDisplay();
+    if(Game.wave%5===0) Game.boss=new Boss();
+    startWaveAnn();
+}
 
+// FIX 3: spawn reduzido no co-op
 function spawnEnemies(dt){
     if(Game.boss||Game.bossDefeated||Game.players.some(p=>p.timeStopActive)) return;
     Game.timeSinceLastWave+=dt;
     if(Game.timeSinceLastWave>Game.waveDuration){ if(Game.enemies.length===0) nextWave(); return; }
-    const ch=(0.02+Game.wave*.005)*Game.players.length;
-    if(Math.random()<ch && Game.enemies.length<(20+Game.wave*2)*Game.players.length){
+    // FIX 3: escala muito mais suave no co-op
+    const playerFactor = 1 + (Game.players.length - 1) * 0.30; // era players.length (2x-4x), agora 1.3x-1.9x
+    const spawnCap = (14 + Game.wave * 1.5) + (Game.players.length - 1) * 6; // cap menor
+    const ch=(0.02+Game.wave*.005)*playerFactor;
+    if(Math.random()<ch && Game.enemies.length<spawnCap){
         const sd=Math.floor(Math.random()*4); let x,y;
         if(sd===0){x=Game.map.minX+Math.random()*(Game.map.maxX-Game.map.minX);y=Game.map.minY-35;}
         else if(sd===1){x=Game.map.maxX+35;y=Game.map.minY+Math.random()*(Game.map.maxY-Game.map.minY);}
         else if(sd===2){x=Game.map.minX+Math.random()*(Game.map.maxX-Game.map.minX);y=Game.map.maxY+35;}
         else {x=Game.map.minX-35;y=Game.map.minY+Math.random()*(Game.map.maxY-Game.map.minY);}
-        Game.enemies.push(new Enemy(x,y,(40+Game.wave*15)*(1+(Game.players.length-1)*.4),100+Math.random()*60+Game.wave*5));
+        // FIX 3: fator de hp menor por jogador extra
+        const hpFactor = 1 + (Game.players.length - 1) * 0.25;
+        Game.enemies.push(new Enemy(x,y,(40+Game.wave*15)*hpFactor, 100+Math.random()*60+Game.wave*5));
     }
 }
 
+// FIX 5: game over apenas quando TODOS estão mortos e sem pendingRevive
 function checkGameOver(){
     if(Game.players.every(p=>p.hp<=0)){
         UI.finalWave.textContent=Game.wave;
@@ -694,16 +885,27 @@ const PANELS=['main-menu','lobby-screen','pause-screen','controls-screen','skin-
 
 function changeState(ns){
     currentState=ns; menuIndex=0; bindingAction=null;
+    resetConfirmPending=false;
     PANELS.forEach(id=>{ const e=document.getElementById(id); if(e) e.classList.add('hidden'); });
 
     switch(ns){
         case STATE.MENU:     UI.mainMenu.classList.remove('hidden'); break;
         case STATE.LOBBY:    UI.lobbyScreen.classList.remove('hidden'); break;
         case STATE.PLAYING:  UI.globalHud.classList.remove('hidden'); UI.hudLayer.classList.remove('hidden'); Game.lastTime=performance.now(); break;
+        // FIX 6: pauseCallerIdx já está correto quando chegamos aqui
         case STATE.PAUSED:   UI.pauseScreen.classList.remove('hidden'); UI.globalHud.classList.remove('hidden'); UI.hudLayer.classList.remove('hidden'); UI.pauseWho.textContent='JOGADOR '+(pauseCallerIdx+1)+' PAUSOU'; break;
         case STATE.GAMEOVER: UI.gameOver.classList.remove('hidden'); break;
-        case STATE.CONTROLS: UI.controlsScreen.classList.remove('hidden'); UI.cfgPnum.textContent=pauseCallerIdx+1; refreshCfg(); break;
-        case STATE.SKINS:    UI.skinShop.classList.remove('hidden'); refreshSkins(); break;
+        case STATE.CONTROLS:
+            UI.controlsScreen.classList.remove('hidden');
+            UI.cfgPnum.textContent=pauseCallerIdx+1;
+            refreshCfg();
+            break;
+        case STATE.SKINS:
+            UI.skinShop.classList.remove('hidden');
+            // FIX 7: mostra de qual jogador é a loja
+            if(UI.shopPlayerLabel) UI.shopPlayerLabel.textContent='JOGADOR '+(pauseCallerIdx+1);
+            refreshSkins();
+            break;
     }
     updSel();
 }
@@ -735,6 +937,7 @@ function navigateSkinMenu(direction){
 
 function openSettingsScreen(state){
     settingsReturnState=currentState===STATE.PAUSED ? STATE.PAUSED : STATE.MENU;
+    // FIX 6: não sobrescreve pauseCallerIdx — já está correto
     changeState(state);
 }
 
@@ -759,7 +962,6 @@ function menuConfirm(){
         return;
     }
     if(bind){
-        // Start listening for button press
         bindingAction=bind;
         document.querySelectorAll('.cfg-btn').forEach(x=>x.classList.remove('listening'));
         btn.classList.add('listening');
@@ -769,13 +971,32 @@ function menuConfirm(){
     switch(act){
         case 'solo':      initLobby(true); break;
         case 'local':     initLobby(false); break;
-        case 'controls':  pauseCallerIdx=Game.players.length?Game.players[0].padIndex:0; openSettingsScreen(STATE.CONTROLS); break;
-        case 'skins':     openSettingsScreen(STATE.SKINS); break;
+        // FIX 6: 'controls' e 'skins' no menu principal usa P0; no pause, usa o caller
+        case 'controls':
+            if(currentState===STATE.MENU) pauseCallerIdx=0;
+            openSettingsScreen(STATE.CONTROLS);
+            break;
+        case 'skins':
+            if(currentState===STATE.MENU) pauseCallerIdx=0;
+            openSettingsScreen(STATE.SKINS);
+            break;
         case 'exit':      window.close(); break;
         case 'resume':    changeState(STATE.PLAYING); break;
         case 'quit':      changeState(STATE.MENU); break;
         case 'back':      closeSettingsScreen(); break;
         case 'back-skin': closeSettingsScreen(); break;
+        // FIX 2: salvar e resetar save
+        case 'save-profile': saveGame(true); break;
+        case 'reset-save':
+            if(!resetConfirmPending){
+                resetConfirmPending=true;
+                btn.textContent='CONFIRMAR RESET?';
+                setTimeout(()=>{ resetConfirmPending=false; btn.textContent='RESETAR SAVE'; },3000);
+            } else {
+                btn.textContent='RESETAR SAVE';
+                resetSave();
+            }
+            break;
     }
 }
 
@@ -792,10 +1013,16 @@ function refreshCfg(){
 }
 
 // ── SKIN SHOP ────────────────────────────────
+// FIX 7: loja mostra e edita o loadout do pauseCallerIdx
+function getShopLoadout(){
+    return getPlayerLoadout(pauseCallerIdx);
+}
+
 function refreshSkins(){
     const items=skinTab==='skins'?ALL_SKINS:ALL_HATS;
     const ownedL=skinTab==='skins'?cosmeticStore.ownedSkins:cosmeticStore.ownedHats;
-    const activeId=skinTab==='skins'?cosmeticStore.activeSkin:cosmeticStore.activeHat;
+    const lo=getShopLoadout();
+    const activeId=skinTab==='skins'?lo.activeSkin:lo.activeHat;
     if(UI.shopSilver) UI.shopSilver.textContent=getWallet().silver;
     UI.skinGrid.innerHTML='';
 
@@ -809,7 +1036,7 @@ function refreshSkins(){
         const statusLabel=active?'✓ EQUIPADO':owned?'✕ EQUIPAR':item.cost===0?'GRÁTIS':item.cost+' PRATA';
         card.innerHTML='<canvas class="skin-preview" width="56" height="56"></canvas>'+
             '<div class="skin-name">'+item.name+'</div>'+
-            '<div class="skin-cost" style="'+(active?'color:#00ff88':owned?'color:#ffd700':'')+'">'+statusLabel+'</div>';
+            '<div class="skin-cost" style="'+(active?'color:#00ff88':owned?'color:#ffd700':'')+'">' +statusLabel+'</div>';
         drawPrev(card.querySelector('canvas'), skinTab==='skins'?item.id:'default', skinTab==='hats'?item.id:'none');
         UI.skinGrid.appendChild(card);
     });
@@ -822,7 +1049,6 @@ function selectCosmetic(type,id){
     const item=items.find(entry=>entry.id===id);
     if(!item) return;
     const owned=isSkin?cosmeticStore.ownedSkins:cosmeticStore.ownedHats;
-    const activeKey=isSkin?'activeSkin':'activeHat';
 
     if(!owned.includes(id)){
         if(getWallet().silver<item.cost){
@@ -836,12 +1062,18 @@ function selectCosmetic(type,id){
         getWallet().silver-=item.cost;
         owned.push(id);
     }
-    cosmeticStore[activeKey]=id;
-    Game.players.forEach(player=>{
-        player.activeSkin=cosmeticStore.activeSkin;
-        player.activeHat=cosmeticStore.activeHat;
-        player.updateHUD();
-    });
+
+    // FIX 7: equipa apenas para o jogador atual (pauseCallerIdx)
+    const lo=getPlayerLoadout(pauseCallerIdx);
+    if(isSkin) lo.activeSkin=id; else lo.activeHat=id;
+
+    // Atualiza o personagem em jogo se ele existir
+    const inGamePlayer=Game.players.find(p=>p.padIndex===pauseCallerIdx);
+    if(inGamePlayer){
+        inGamePlayer.activeSkin=lo.activeSkin;
+        inGamePlayer.activeHat=lo.activeHat;
+        inGamePlayer.updateHUD();
+    }
     saveGame();
     refreshSkins();
     const next=getBtns().findIndex(button=>button.dataset.cosmeticId===id);
@@ -859,13 +1091,15 @@ function renderCharacterPreview(){
     c.fillStyle=bg; c.fillRect(0,0,cv.width,cv.height);
     c.strokeStyle='rgba(135,95,255,.18)'; c.lineWidth=1;
     for(let i=18;i<250;i+=24){c.beginPath();c.moveTo(i,0);c.lineTo(i,250);c.stroke();c.beginPath();c.moveTo(0,i);c.lineTo(250,i);c.stroke();}
+    // FIX 7: preview mostra o loadout do jogador atual
+    const lo=getShopLoadout();
     const avatar=Object.create(Player.prototype);
     avatar.x=125; avatar.y=132; avatar.radius=48; avatar.hp=100; avatar.invincible=0;
-    avatar.color='#2277ff'; avatar.activeSkin=cosmeticStore.activeSkin; avatar.activeHat=cosmeticStore.activeHat;
+    avatar.color=PColors[pauseCallerIdx%4]; avatar.activeSkin=lo.activeSkin; avatar.activeHat=lo.activeHat;
     avatar.skinAnim=Date.now()/900;
     avatar.draw(c);
-    const skin=ALL_SKINS.find(item=>item.id===cosmeticStore.activeSkin);
-    const hat=ALL_HATS.find(item=>item.id===cosmeticStore.activeHat);
+    const skin=ALL_SKINS.find(item=>item.id===lo.activeSkin);
+    const hat=ALL_HATS.find(item=>item.id===lo.activeHat);
     if(UI.previewSkin) UI.previewSkin.textContent='TRAJE: '+(skin?skin.name:'NÚCLEO PADRÃO');
     if(UI.previewHat) UI.previewHat.textContent='ACESSÓRIO: '+(hat?hat.name:'SEM ACESSÓRIO');
 }
@@ -884,7 +1118,6 @@ let lastPS = {};
 function checkGamepad(){
     const pads=getConnectedGamepads();
 
-    // LOBBY: watch for connected controllers
     if(currentState===STATE.LOBBY){
         const connected=[];
         for(let i=0;i<4;i++) if(pads[i]) connected.push(i);
@@ -932,7 +1165,6 @@ function checkGamepad(){
                     p.keys[bindingAction]=b;
                     copyToDefaultControls(p);
                     saveGame();
-                    // Update label immediately
                     document.querySelectorAll('.cfg-btn[data-bind="'+bindingAction+'"]').forEach(el=>{
                         el.textContent=btnN(b);
                         el.classList.remove('listening');
@@ -950,9 +1182,9 @@ function checkGamepad(){
         const CRS=jt(0), CRC=jt(1), L2=jt(6), R2=jt(7);
 
         const inMenu=[STATE.MENU,STATE.PAUSED,STATE.GAMEOVER,STATE.CONTROLS,STATE.SKINS].includes(currentState);
+        // FIX 6: no PAUSED/CONTROLS/SKINS, só o caller controla os menus
         const isCaller=currentState===STATE.MENU||currentState===STATE.GAMEOVER||i===pauseCallerIdx;
 
-        // A sala não faz parte dos menus navegáveis, mas ○ deve cancelar a espera.
         if(currentState===STATE.LOBBY && CRC){
             changeState(STATE.MENU);
         }
@@ -973,7 +1205,6 @@ function checkGamepad(){
                     closeSettingsScreen();
                 else if(currentState===STATE.PAUSED) changeState(STATE.PLAYING);
             }
-            // Ajustes são todos acessíveis pelo D-PAD, sem precisar de mouse.
             if(currentState===STATE.CONTROLS){
                 const selected=getBtns()[menuIndex];
                 if(selected && selected.dataset.setting){
@@ -1000,26 +1231,37 @@ function checkGamepad(){
 }
 
 // ── RENDERING ────────────────────────────────
+// FIX 11: nebulosas dinâmicas
 function drawBackground(c,vx,vy,vw,vh){
     const q=quality();
     const bg=c.createRadialGradient(vx+vw*.48,vy+vh*.42,0,vx+vw*.5,vy+vh*.5,Math.max(vw,vh)*.82);
     bg.addColorStop(0,q===QUALITY_PROFILES.HIGH?'#0b1530':'#070c18');
     bg.addColorStop(.52,'#050810'); bg.addColorStop(1,'#02040a');
     c.fillStyle=bg; c.fillRect(vx,vy,vw,vh);
+
+    // FIX 11: nebulosas dinâmicas (apenas ALTO)
+    if(q.nebula){
+        const now=Date.now()/1000;
+        const hazes=[
+            {cx:vx+vw*.2+Math.sin(now*.12)*40, cy:vy+vh*.8+Math.cos(now*.09)*30, r:vw*.55, c0:'rgba(70,20,170,.12)', c1:'rgba(70,20,170,0)'},
+            {cx:vx+vw*.8+Math.sin(now*.08)*50, cy:vy+vh*.2+Math.cos(now*.11)*40, r:vw*.50, c0:'rgba(0,120,200,.08)', c1:'rgba(0,120,200,0)'},
+            {cx:vx+vw*.5+Math.sin(now*.06)*30, cy:vy+vh*.5+Math.cos(now*.07)*25, r:vw*.40, c0:'rgba(180,0,100,.06)', c1:'rgba(180,0,100,0)'},
+        ];
+        hazes.forEach(h=>{ const haze=c.createRadialGradient(h.cx,h.cy,0,h.cx,h.cy,h.r); haze.addColorStop(0,h.c0); haze.addColorStop(1,h.c1); c.fillStyle=haze; c.fillRect(vx,vy,vw,vh); });
+    }
+
     if(!q.stars) return;
     const now=Date.now()/1000;
     for(let i=0;i<q.stars;i++){
         const x=vx+((i*83+17)%997)/997*vw;
         const y=vy+((i*173+71)%991)/991*vh;
-        const pulse=.32+((Math.sin(now*1.5+i*2.7)+1)*.18);
-        c.fillStyle=i%7===0?'rgba(160,105,255,'+pulse+')':'rgba(110,215,255,'+pulse+')';
-        const size=i%9===0?1.8:1;
+        // FIX 11: cintilação mais expressiva e tamanhos variados
+        const pulse=q.nebula
+            ? .22+((Math.sin(now*(1.2+i%5*.4)+i*2.7)+1)*.25)
+            : .32+((Math.sin(now*1.5+i*2.7)+1)*.18);
+        c.fillStyle=i%7===0?'rgba(160,105,255,'+pulse+')':i%5===0?'rgba(255,220,120,'+pulse+')':'rgba(110,215,255,'+pulse+')';
+        const size=q.nebula?(i%9===0?2.5:i%5===0?1.8:1.1):(i%9===0?1.8:1);
         c.fillRect(x,y,size,size);
-    }
-    if(q===QUALITY_PROFILES.HIGH){
-        const haze=c.createRadialGradient(vx+vw*.2,vy+vh*.8,0,vx+vw*.2,vy+vh*.8,vw*.55);
-        haze.addColorStop(0,'rgba(70,20,170,.10)'); haze.addColorStop(1,'rgba(70,20,170,0)');
-        c.fillStyle=haze; c.fillRect(vx,vy,vw,vh);
     }
 }
 
@@ -1029,24 +1271,29 @@ function drawScanlines(c,vx,vy,vw,vh){
     for(let y=vy;y<vy+vh;y+=4) c.fillRect(vx,y,vw,1);
 }
 
+// FIX 11: vinheta nas bordas do viewport
+function drawVignette(c,vx,vy,vw,vh){
+    if(!quality().vignette) return;
+    const g=c.createRadialGradient(vx+vw/2,vy+vh/2,Math.min(vw,vh)*.3,vx+vw/2,vy+vh/2,Math.max(vw,vh)*.75);
+    g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(0,0,10,.5)');
+    c.fillStyle=g; c.fillRect(vx,vy,vw,vh);
+}
+
 function drawViewport(c,vx,vy,vw,vh,p){
     c.save(); c.beginPath(); c.rect(vx,vy,vw,vh); c.clip();
 
     drawBackground(c,vx,vy,vw,vh);
 
-    // Time stop blue tint
     if(Game.players.some(pl=>pl.timeStopActive)){ c.fillStyle='rgba(0,100,220,.07)'; c.fillRect(vx,vy,vw,vh); }
 
     const sh=Game.cameraShake>.5?{x:(Math.random()-.5)*Game.cameraShake,y:(Math.random()-.5)*Game.cameraShake}:{x:0,y:0};
     c.translate(vx+vw/2-p.camera.x+sh.x, vy+vh/2-p.camera.y+sh.y);
 
-    // Grid
     const cs=80, sx=Math.floor((p.camera.x-vw/2)/cs)*cs, sy=Math.floor((p.camera.y-vh/2)/cs)*cs;
     c.strokeStyle='rgba(0,180,255,'+quality().gridAlpha+')'; c.lineWidth=1;
     for(let x=sx;x<p.camera.x+vw/2;x+=cs){ c.beginPath(); c.moveTo(x,p.camera.y-vh/2); c.lineTo(x,p.camera.y+vh/2); c.stroke(); }
     for(let y=sy;y<p.camera.y+vh/2;y+=cs){ c.beginPath(); c.moveTo(p.camera.x-vw/2,y); c.lineTo(p.camera.x+vw/2,y); c.stroke(); }
 
-    // Map border glow
     c.strokeStyle='rgba(0,180,255,.2)'; c.lineWidth=3; c.shadowColor='#00d4ff'; c.shadowBlur=effectBlur(10);
     c.strokeRect(Game.map.minX,Game.map.minY,Game.map.maxX-Game.map.minX,Game.map.maxY-Game.map.minY); c.shadowBlur=0;
 
@@ -1054,16 +1301,30 @@ function drawViewport(c,vx,vy,vw,vh,p){
     Game.drops.forEach(d=>d.draw(c));
     for(let i=0;i<Game.particles.length;i+=quality().particleStep) Game.particles[i].draw(c);
 
-    // Player projectiles
-    Game.projectiles.forEach(pr=>{ c.fillStyle=pr.color; c.shadowColor=pr.color; c.shadowBlur=effectBlur(14); c.beginPath(); c.arc(pr.x,pr.y,pr.radius,0,Math.PI*2); c.fill(); c.shadowBlur=0; });
-    // Enemy projectiles
+    // FIX 11: trail nos projéteis do jogador (apenas ALTO)
+    Game.projectiles.forEach(pr=>{
+        if(quality().trails && pr.trail && pr.trail.length>0){
+            pr.trail.forEach((pt,idx)=>{
+                const alpha=(idx+1)/pr.trail.length*0.35;
+                const size=pr.radius*(idx+1)/pr.trail.length;
+                c.fillStyle=pr.color; c.globalAlpha=alpha; c.shadowBlur=0;
+                c.beginPath(); c.arc(pt.x,pt.y,size,0,Math.PI*2); c.fill();
+            });
+            c.globalAlpha=1;
+        }
+        c.fillStyle=pr.color; c.shadowColor=pr.color; c.shadowBlur=effectBlur(14);
+        c.beginPath(); c.arc(pr.x,pr.y,pr.radius,0,Math.PI*2); c.fill(); c.shadowBlur=0;
+    });
     Game.enemyProjectiles.forEach(pr=>{ c.fillStyle=pr.color; c.shadowColor=pr.color; c.shadowBlur=effectBlur(14); c.beginPath(); c.arc(pr.x,pr.y,pr.radius,0,Math.PI*2); c.fill(); c.shadowBlur=0; });
 
     Game.enemies.forEach(e=>e.draw(c));
     if(Game.boss) Game.boss.draw(c);
+    // FIX 8: todos jogadores desenhados (mesmo mortos, mostram ícone de revive)
     Game.players.forEach(pl=>pl.draw(c));
     Game.floatingTexts.forEach(ft=>ft.draw(c));
     c.restore();
+
+    drawVignette(c,vx,vy,vw,vh); // FIX 11
     drawScanlines(c,vx,vy,vw,vh);
 }
 
@@ -1082,7 +1343,14 @@ function gameLoop(ts){
 
     // ─ Player projectiles ─
     for(let i=Game.projectiles.length-1;i>=0;i--){
-        const p=Game.projectiles[i]; p.x+=p.vx*dt/1000; p.y+=p.vy*dt/1000; let hit=false;
+        const p=Game.projectiles[i];
+        // FIX 11: atualiza trail
+        if(quality().trails){
+            if(!p.trail) p.trail=[];
+            p.trail.unshift({x:p.x,y:p.y});
+            if(p.trail.length>5) p.trail.pop();
+        }
+        p.x+=p.vx*dt/1000; p.y+=p.vy*dt/1000; let hit=false;
         if(Game.boss){
             if(Game.boss.phase===1){ for(const w of Game.boss.weapons){ if(!w.active)continue; const wx=Game.boss.x+Math.cos(Game.boss.angle)*w.relX-Math.sin(Game.boss.angle)*w.relY,wy=Game.boss.y+Math.sin(Game.boss.angle)*w.relX+Math.cos(Game.boss.angle)*w.relY; if(Vect.dist(p.x,p.y,wx,wy)<p.radius+22){Game.boss.takeDamage(10*(p.damage/20),w.id);for(let j=0;j<5;j++)Game.particles.push(new Particle(p.x,p.y,'#ff7700',(Math.random()-.5)*15,(Math.random()-.5)*15,2));if(p.owner)p.owner.score+=5;hit=true;break;} } }
             else { if(Vect.dist(p.x,p.y,Game.boss.x,Game.boss.y)<p.radius+Game.boss.radius){Game.boss.takeDamage(10*(p.damage/20));for(let j=0;j<5;j++)Game.particles.push(new Particle(p.x,p.y,Game.boss.color,(Math.random()-.5)*18,(Math.random()-.5)*18,2));if(p.owner)p.owner.score+=5;hit=true;} }
@@ -1091,19 +1359,21 @@ function gameLoop(ts){
             for(let j=Game.enemies.length-1;j>=0;j--){
                 const e=Game.enemies[j];
                 if(Vect.dist(p.x,p.y,e.x,e.y) >= p.radius+e.radius) continue;
-
                 e.hp-=p.damage;
-                for(let k=0;k<5;k++){
-                    Game.particles.push(new Particle(p.x,p.y,e.color,(Math.random()-.5)*10,(Math.random()-.5)*10,2));
-                }
+                for(let k=0;k<5;k++) Game.particles.push(new Particle(p.x,p.y,e.color,(Math.random()-.5)*10,(Math.random()-.5)*10,2));
                 if(e.hp<=0){
                     if(Math.random()<.4) Game.drops.push(new Coin(e.x,e.y));
-                    if(Math.random()<.18) Game.drops.push(new Coin(e.x,e.y,true)); // Prata para a loja persistente
-                    if(p.owner) p.owner.score+=10;
+                    if(Math.random()<.18) Game.drops.push(new Coin(e.x,e.y,true));
+                    if(p.owner){ p.owner.score+=10; p.owner.kills++; } // FIX 10: incrementa kills
+                    // FIX 4: spawna coração a cada 50 kills
+                    Game.totalKills++;
+                    if(Game.totalKills>0 && Game.totalKills%50===0){
+                        Game.drops.push(new HeartDrop(e.x,e.y));
+                        floatText(e.x,e.y-20,'❤ CORAÇÃO!','#ff6699');
+                    }
                     Game.enemies.splice(j,1);
                 }
-                hit=true;
-                break;
+                hit=true; break;
             }
         }
         if(!hit){ for(let w=Game.walls.length-1;w>=0;w--){ const wall=Game.walls[w]; if(p.x>wall.x&&p.x<wall.x+wall.w&&p.y>wall.y&&p.y<wall.y+wall.h){wall.hp--;if(wall.hp<=0)Game.walls.splice(w,1);hit=true;break;} } }
@@ -1136,11 +1406,17 @@ function gameLoop(ts){
     if(Game.particles.length>maxParticles) Game.particles.splice(0,Game.particles.length-maxParticles);
     if(Game.cameraShake>0) Game.cameraShake*=.88;
 
+    // ─ FIX 10: atualiza display de onda ─
+    if(UI.waveDisplay) UI.waveDisplay.textContent='ONDA '+Game.wave;
+
     // ─ Draw split-screen ─
     ctx.clearRect(0,0,canvas.width,canvas.height);
     const n=Game.players.length; if(n===0) return;
+    // FIX 8: usa o primeiro jogador vivo como viewport; se todos mortos, usa o primeiro
+    const viewPlayers = Game.players.filter(p=>p.hp>0);
+    const getViewP = (idx) => viewPlayers[idx] || Game.players[idx] || Game.players[0];
     if(n===1){
-        drawViewport(ctx,0,0,canvas.width,canvas.height,Game.players[0]);
+        drawViewport(ctx,0,0,canvas.width,canvas.height,getViewP(0));
     } else if(n===2){
         const hw=canvas.width/2;
         drawViewport(ctx,0,0,hw,canvas.height,Game.players[0]);
