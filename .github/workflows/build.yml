@@ -1,64 +1,339 @@
-name: Build Boyceta PS4 PKG
+name: Build Geometric Wars PS4 PKG
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   workflow_dispatch:
+
+env:
+  TITLE: "Geometric Wars"
+  TITLE_ID: "GEOM00001"
+  VERSION: "01.00"
+  CONTENT_ID: "IV0000-GEOM00001_00-GEOMETRICWARS000"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Compiler
-      run: sudo apt-get update && sudo apt-get install -y clang lld curl
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
 
-    - name: Download OpenOrbis Toolchain
-      run: |
-        ASSET_URL=$(curl -s https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest | grep "browser_download_url" | grep -v ".exe" | grep -v ".pkg" | head -1 | cut -d '"' -f 4)
-        curl -L "$ASSET_URL" -o toolchain.tar.gz
-        mkdir -p $HOME/OpenOrbis
-        tar -xzf toolchain.tar.gz -C $HOME/OpenOrbis --strip-components=1
-        echo "OO_PS4_TOOLCHAIN=$HOME/OpenOrbis/PS4Toolchain" >> $GITHUB_ENV
-        chmod +x $HOME/OpenOrbis/PS4Toolchain/bin/linux/*
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            lld \
+            curl \
+            jq \
+            ca-certificates
 
-    - name: Build eboot.bin
-      run: |
-        clang++ --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c -isysroot $OO_PS4_TOOLCHAIN -isystem $OO_PS4_TOOLCHAIN/include -isystem $OO_PS4_TOOLCHAIN/include/c++/v1 -o main.o src/main.cpp
-        ld.lld -m elf_x86_64 -pie --script $OO_PS4_TOOLCHAIN/link.x --eh-frame-hdr -L$OO_PS4_TOOLCHAIN/lib -lc -lkernel -lc++ -lSceSystemService $OO_PS4_TOOLCHAIN/lib/crt1.o main.o -o main.elf
-        $OO_PS4_TOOLCHAIN/bin/linux/create-fself -in=main.elf -out=main.oelf --eboot "eboot.bin" --paid 0x3800000000000011
+      - name: Download OpenOrbis Toolchain v0.5.4
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    - name: Create PKG
-      run: |
-        # 1. Copia arquivos originais (exceto keystone para evitar corrupção por conflito de ID)
-        mkdir -p sce_sys
-        cp Boyceta-ps4/sce_sys/param.sfo sce_sys/param.sfo
-        cp Boyceta-ps4/sce_sys/icon0.png sce_sys/icon0.png || true
-        
-        # 2. Atualiza NOME e ID com a ferramenta oficial
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo CONTENT_ID --type Utf8 --maxsize 48 --value 'IV0001-GEOM00001_00-0000000000000000'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE --type Utf8 --maxsize 128 --value 'Geometric Wars'
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core sfo_setentry sce_sys/param.sfo TITLE_ID --type Utf8 --maxsize 12 --value 'GEOM00001'
-        
-        # 3. Move arquivos web do jogo
-        cp Boyceta-ps4/index.html index.html || true
-        cp Boyceta-ps4/script.js script.js || true
-        cp Boyceta-ps4/style.css style.css || true
-        
-        # 4. Gera GP4 oficial sem o keystone!
-        mkdir -p output
-        $OO_PS4_TOOLCHAIN/bin/linux/create-gp4 -out Boyceta-ps4.gp4 -content-id "IV0001-GEOM00001_00-0000000000000000" -files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png index.html script.js style.css"
-        
-        # 5. Compila PKG Fake Oficial
-        $OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core pkg_build Boyceta-ps4.gp4 .
-        mv *.pkg output/
+          RELEASE_API="https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/tags/v0.5.4"
 
-    - name: Upload PKG
-      uses: actions/upload-artifact@v4
-      with:
-        name: Boyceta-PS4-PKG
-        path: output/*.pkg
-        retention-days: 30
+          ASSET_URL="$(
+            curl -fsSL "$RELEASE_API" |
+            jq -r '
+              .assets[]
+              | select(.name | test("\\.(tar\\.gz|tgz)$"; "i"))
+              | .browser_download_url
+            ' |
+            head -n 1
+          )"
+
+          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "ERRO: não encontrei o pacote Linux do OpenOrbis."
+            exit 1
+          fi
+
+          echo "Baixando OpenOrbis..."
+          curl -fL "$ASSET_URL" -o toolchain.tar.gz
+
+          mkdir -p "$HOME/OpenOrbis"
+
+          tar -xzf toolchain.tar.gz \
+            -C "$HOME/OpenOrbis" \
+            --strip-components=1
+
+          echo "OO_PS4_TOOLCHAIN=$HOME/OpenOrbis/PS4Toolchain" >> "$GITHUB_ENV"
+
+          chmod +x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/"* || true
+
+          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/create-fself"
+          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/create-gp4"
+          test -x "$HOME/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core"
+
+      - name: Verify project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s src/main.cpp
+
+          test -s Boyceta-ps4/index.html
+          test -s Boyceta-ps4/script.js
+          test -s Boyceta-ps4/style.css
+
+          test -s sce_sys/icon0.png
+          test -s sce_sys/about/right.sprx
+
+          echo "Arquivos necessários encontrados."
+
+      - name: Build PS4 eboot.bin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang++ \
+            --target=x86_64-pc-freebsd12-elf \
+            -fPIC \
+            -funwind-tables \
+            -c \
+            -isysroot "$OO_PS4_TOOLCHAIN" \
+            -isystem "$OO_PS4_TOOLCHAIN/include" \
+            -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
+            -o main.o \
+            src/main.cpp
+
+          test -s main.o
+
+          ld.lld \
+            -m elf_x86_64 \
+            -pie \
+            --script "$OO_PS4_TOOLCHAIN/link.x" \
+            --eh-frame-hdr \
+            -L"$OO_PS4_TOOLCHAIN/lib" \
+            main.o \
+            "$OO_PS4_TOOLCHAIN/lib/crt1.o" \
+            -lc \
+            -lkernel \
+            -lc++ \
+            -lSceSystemService \
+            -o main.elf
+
+          test -s main.elf
+
+          "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" \
+            -in=main.elf \
+            -out=main.oelf \
+            --eboot "eboot.bin" \
+            --paid 0x3800000000000011
+
+          test -s eboot.bin
+
+          echo "eboot.bin criado corretamente."
+          ls -lh eboot.bin
+
+      - name: Prepare clean PKG directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf pkgroot output
+
+          mkdir -p pkgroot/sce_sys/about
+          mkdir -p pkgroot/sce_module
+          mkdir -p output
+
+          cp eboot.bin pkgroot/eboot.bin
+
+          cp Boyceta-ps4/index.html pkgroot/index.html
+          cp Boyceta-ps4/script.js pkgroot/script.js
+          cp Boyceta-ps4/style.css pkgroot/style.css
+
+          cp sce_sys/icon0.png pkgroot/sce_sys/icon0.png
+          cp sce_sys/about/right.sprx pkgroot/sce_sys/about/right.sprx
+
+          if [ -f sce_sys/pic0.png ]; then
+            cp sce_sys/pic0.png pkgroot/sce_sys/pic0.png
+          fi
+
+          if [ -f sce_sys/pic1.png ]; then
+            cp sce_sys/pic1.png pkgroot/sce_sys/pic1.png
+          fi
+
+          if compgen -G "sce_module/*" > /dev/null; then
+            cp -a sce_module/* pkgroot/sce_module/
+          fi
+
+          test -s pkgroot/eboot.bin
+          test -s pkgroot/index.html
+          test -s pkgroot/script.js
+          test -s pkgroot/style.css
+          test -s pkgroot/sce_sys/icon0.png
+          test -s pkgroot/sce_sys/about/right.sprx
+
+          echo "Conteúdo que entrará no PKG:"
+          find pkgroot -type f -print
+
+      - name: Create fresh param.sfo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SFO_TOOL="$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core"
+          SFO="pkgroot/sce_sys/param.sfo"
+
+          rm -f "$SFO"
+
+          "$SFO_TOOL" sfo_new "$SFO"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            APP_TYPE \
+            --type Integer \
+            --maxsize 4 \
+            --value 1
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            APP_VER \
+            --type Utf8 \
+            --maxsize 8 \
+            --value "$VERSION"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            ATTRIBUTE \
+            --type Integer \
+            --maxsize 4 \
+            --value 0
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            CATEGORY \
+            --type Utf8 \
+            --maxsize 4 \
+            --value "gd"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            CONTENT_ID \
+            --type Utf8 \
+            --maxsize 48 \
+            --value "$CONTENT_ID"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            DOWNLOAD_DATA_SIZE \
+            --type Integer \
+            --maxsize 4 \
+            --value 0
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            SYSTEM_VER \
+            --type Integer \
+            --maxsize 4 \
+            --value 0
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            TITLE \
+            --type Utf8 \
+            --maxsize 128 \
+            --value "$TITLE"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            TITLE_ID \
+            --type Utf8 \
+            --maxsize 12 \
+            --value "$TITLE_ID"
+
+          "$SFO_TOOL" sfo_setentry "$SFO" \
+            VERSION \
+            --type Utf8 \
+            --maxsize 8 \
+            --value "$VERSION"
+
+          test -s "$SFO"
+
+          echo "Novo param.sfo criado."
+
+      - name: Build GP4 and PKG
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CREATE_GP4="$OO_PS4_TOOLCHAIN/bin/linux/create-gp4"
+          PKG_TOOL="$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core"
+
+          cd pkgroot
+
+          FILES=(
+            "eboot.bin"
+            "sce_sys/about/right.sprx"
+            "sce_sys/param.sfo"
+            "sce_sys/icon0.png"
+            "index.html"
+            "script.js"
+            "style.css"
+          )
+
+          if [ -f "sce_sys/pic0.png" ]; then
+            FILES+=("sce_sys/pic0.png")
+          fi
+
+          if [ -f "sce_sys/pic1.png" ]; then
+            FILES+=("sce_sys/pic1.png")
+          fi
+
+          if [ -d "sce_module" ]; then
+            while IFS= read -r FILE; do
+              FILES+=("$FILE")
+            done < <(find sce_module -type f | sort)
+          fi
+
+          echo "Arquivos enviados ao create-gp4:"
+          printf '%s\n' "${FILES[@]}"
+
+          "$CREATE_GP4" \
+            -out pkg.gp4 \
+            --content-id="$CONTENT_ID" \
+            --files "${FILES[*]}"
+
+          test -s pkg.gp4
+
+          "$PKG_TOOL" pkg_build pkg.gp4 .
+
+          PKG_FILE="$(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              -name '*.pkg' \
+              -size +0c \
+              -print \
+              -quit
+          )"
+
+          if [ -z "$PKG_FILE" ]; then
+            echo "ERRO: PkgTool não gerou um PKG válido."
+            exit 1
+          fi
+
+          echo "PKG produzido:"
+          ls -lh "$PKG_FILE"
+
+          cp "$PKG_FILE" ../output/Geometric-Wars.pkg
+
+          cd ..
+
+          test -s output/Geometric-Wars.pkg
+
+          sha256sum \
+            output/Geometric-Wars.pkg \
+            > output/Geometric-Wars.pkg.sha256
+
+          echo "SHA256:"
+          cat output/Geometric-Wars.pkg.sha256
+
+      - name: Upload final PKG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Geometric-Wars-PS4
+          path: |
+            output/Geometric-Wars.pkg
+            output/Geometric-Wars.pkg.sha256
+          if-no-files-found: error
+          retention-days: 30
