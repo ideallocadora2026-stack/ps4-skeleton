@@ -18,7 +18,7 @@ LIBS := -lSDL2 -lc -lm -lkernel -lc++ \
 	-lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
 	-lSceSysmodule -lSceFreeType -lSceSystemService
 
-CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -O2 -fPIC \
+CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O2 -fPIC \
 	-funwind-tables -c -isysroot $(TOOLCHAIN) \
 	-isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1 \
 	-I$(SDL_ROOT)/include -Isrc

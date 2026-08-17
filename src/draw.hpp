@@ -26,7 +26,7 @@ void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value,
 void triangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, int y3, Color value);
 void panel(SDL_Renderer* renderer, int x, int y, int w, int h, Color border, Color background);
 int textWidth(const std::string& text, int scale);
-void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int scale, Color value, bool centered = false);
+void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int scale, Color textColor, bool centered = false);
 }
 }
 
