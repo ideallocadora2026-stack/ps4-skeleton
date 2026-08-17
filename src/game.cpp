@@ -104,6 +104,27 @@ enum class ShopTab
     Hats
 };
 
+enum BossType
+{
+    BossX = 0,
+    BossSquare,
+    BossTriangle,
+    BossCircle,
+    BossDpad,
+    BossTouchpad,
+    BossCount
+};
+
+enum ProjectileKind
+{
+    ProjectileOrb = 0,
+    ProjectileX,
+    ProjectileSquare,
+    ProjectileTriangle,
+    ProjectileArrow,
+    ProjectileDebris
+};
+
 struct CosmeticItem
 {
     const char* name;
@@ -179,8 +200,13 @@ struct Pad
     bool current[PAD_BUTTON_COUNT];
     bool previous[PAD_BUTTON_COUNT];
     float axes[4];
+    bool touchActive;
+    bool previousTouchActive;
+    float touchX;
+    float touchY;
 
-    Pad() : handle(-1), userId(-1), ownsHandle(false), connected(false)
+    Pad() : handle(-1), userId(-1), ownsHandle(false), connected(false),
+            touchActive(false), previousTouchActive(false), touchX(0.0f), touchY(0.0f)
     {
         std::memset(current, 0, sizeof(current));
         std::memset(previous, 0, sizeof(previous));
@@ -220,6 +246,9 @@ struct Player
     int skin;
     int hat;
     float cosmeticAnimation;
+    bool touchTracking;
+    float touchAnchorX;
+    float touchAnchorY;
 };
 
 struct Projectile
@@ -234,6 +263,10 @@ struct Projectile
     Color color;
     Vec2 trail[5];
     int trailCount;
+    int kind;
+    int bounces;
+    float angle;
+    float rotationSpeed;
 };
 
 struct Enemy
@@ -248,6 +281,8 @@ struct Enemy
     float rotationSpeed;
     int edges;
     Color color;
+    int kind;
+    int targetPlayer;
 };
 
 struct Drop
@@ -299,6 +334,18 @@ struct BossWeapon
     bool active;
 };
 
+struct BossPart
+{
+    float x;
+    float y;
+    float hp;
+    float maxHp;
+    bool active;
+    bool collectible;
+    bool collected;
+    int collector;
+};
+
 struct Boss
 {
     bool active;
@@ -315,9 +362,35 @@ struct Boss
     float attackTimer;
     float teleportTimer;
     float spiralAngle;
+    float velocityX;
+    float velocityY;
+    float rotationDirection;
+    int state;
+    float stateTimer;
+    float sweepRemaining;
+    bool laserActive;
+    float droneTimer;
+    int droneCount;
+    int bounceCount;
+    int telegraphDirection;
+    int memoryPlayer;
+    int memoryRound;
+    int memoryLives;
+    int memoryState;
+    int memorySequence[8];
+    int memoryShowIndex;
+    int memoryInputIndex;
+    float memoryTimer;
+    uint32_t memoryRemovedMask;
+    int memoryFlashDirection;
+    float memoryFlashTimer;
+    bool shootSuppressed;
+    bool freezeActive;
+    float abilityTimer;
     Color color;
     Color trueColor;
     BossWeapon weapons[3];
+    BossPart parts[4];
 };
 
 float clampf(float value, float minimum, float maximum)
@@ -417,6 +490,21 @@ float nativeAxis(uint8_t value)
     return clampf((static_cast<int>(value) - 128) / 127.0f, -1.0f, 1.0f);
 }
 
+bool isBossWaveNumber(int value)
+{
+    return value >= 5 && value <= BossCount * 5 && value % 5 == 0;
+}
+
+float pointSegmentDistanceSquared(float px, float py, float ax, float ay, float bx, float by)
+{
+    const float abX = bx - ax;
+    const float abY = by - ay;
+    const float lengthSquared = abX * abX + abY * abY;
+    if (lengthSquared <= 0.0001f) return distanceSquared(px, py, ax, ay);
+    const float t = clampf(((px - ax) * abX + (py - ay) * abY) / lengthSquared, 0.0f, 1.0f);
+    return distanceSquared(px, py, ax + abX * t, ay + abY * t);
+}
+
 uint32_t profileChecksum(const ProfileDisk& profile)
 {
     ProfileDisk copy = profile;
@@ -442,7 +530,8 @@ struct Game::Impl
           totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0),
           enemyColor(RED), graphicsQuality(GraphicsQuality::High), ownedSkins(1u), ownedHats(1u),
           shopTab(ShopTab::Skins), controlIndex(0), bindingAction(-1), noticeTimer(0),
-          resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0)
+          resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
+          menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu)
     {
         std::memset(&boss, 0, sizeof(boss));
         std::memset(nativePadHandles, -1, sizeof(nativePadHandles));
@@ -514,6 +603,9 @@ struct Game::Impl
     bool profileDirty;
     uint32_t disconnectedPlayers;
     uint32_t controllerRefreshTick;
+    float menuTravelEffect;
+    float panelEntryEffect;
+    Screen renderedScreen;
 
     std::vector<Projectile> projectiles;
     std::vector<Projectile> enemyProjectiles;
@@ -554,10 +646,17 @@ struct Game::Impl
     void spawnEnemy();
     void spawnBoss();
     void updateBoss(float dt);
+    void setBossPhase(int phase);
     void bossWeaponPosition(int index, float& x, float& y) const;
+    void damageBossPart(int index, float damage);
+    void spawnBossDrone();
+    void spawnArrowWall(int direction);
+    void startMemoryRound();
+    void failMemoryRound();
     void damageBoss(float damage, int weaponIndex);
     void defeatBoss();
-    void addEnemyProjectile(float x, float y, float angle, float speed, float radius, Color color);
+    void addEnemyProjectile(float x, float y, float angle, float speed, float radius, Color color,
+                            int kind = ProjectileOrb, int bounces = 0, float damage = 10.0f);
     void shoot(Player& player, int playerIndex);
     bool anyTimeStop() const;
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
@@ -806,6 +905,8 @@ void Game::Impl::sampleInput()
     controllerCount = 0;
     for (int p = 0; p < 4; ++p)
     {
+        pads[p].previousTouchActive = pads[p].touchActive;
+        pads[p].touchActive = false;
         for (int button = 0; button < PAD_BUTTON_COUNT; ++button)
         {
             pads[p].previous[button] = pads[p].current[button];
@@ -825,6 +926,12 @@ void Game::Impl::sampleInput()
         pads[p].axes[1] = nativeAxis(data.leftStick.y);
         pads[p].axes[2] = nativeAxis(data.rightStick.x);
         pads[p].axes[3] = nativeAxis(data.rightStick.y);
+        if (data.touch.fingers > 0)
+        {
+            pads[p].touchActive = true;
+            pads[p].touchX = static_cast<float>(data.touch.touch[0].x);
+            pads[p].touchY = static_cast<float>(data.touch.touch[0].y);
+        }
     }
     updateDisconnectedPlayers();
 }
@@ -952,6 +1059,10 @@ void Game::Impl::tick(uint32_t now)
     updateNativePad(dt);
     noticeTimer = std::max(0.0f, noticeTimer - dt);
     resetConfirmTimer = std::max(0.0f, resetConfirmTimer - dt);
+    menuTravelEffect = std::max(0.0f, menuTravelEffect - dt);
+    panelEntryEffect = std::max(0.0f, panelEntryEffect - dt);
+    const int previousMenuIndex = menuIndex;
+    const Screen previousScreen = screen;
 
     switch (screen)
     {
@@ -972,6 +1083,13 @@ void Game::Impl::tick(uint32_t now)
         case Screen::Playing:
             updatePlaying(dt);
             break;
+    }
+    if (menuIndex != previousMenuIndex) menuTravelEffect = 0.42f;
+    if (screen != previousScreen || screen != renderedScreen)
+    {
+        renderedScreen = screen;
+        panelEntryEffect = 0.28f;
+        menuTravelEffect = 0.55f;
     }
     render();
 }
@@ -1295,6 +1413,9 @@ void Game::Impl::startGame(int count)
         player.skin = activeSkins[slot];
         player.hat = activeHats[slot];
         player.cosmeticAnimation = 0.0f;
+        player.touchTracking = false;
+        player.touchAnchorX = 0.0f;
+        player.touchAnchorY = 0.0f;
     }
     screen = Screen::Playing;
     menuIndex = 0;
@@ -1383,6 +1504,8 @@ void Game::Impl::spawnEnemy()
     enemy.rotationSpeed = (random01() - 0.5f) * 2.0f;
     enemy.edges = enemyEdges;
     enemy.color = enemyColor;
+    enemy.kind = 0;
+    enemy.targetPlayer = -1;
     enemies.push_back(enemy);
 }
 
@@ -1405,7 +1528,7 @@ void Game::Impl::nextWave()
             rumble(player.pad, 0.7f, 400);
         }
     }
-    if (wave % 5 == 0) spawnBoss();
+    if (isBossWaveNumber(wave)) spawnBoss();
 }
 
 void Game::Impl::spawnBoss()
@@ -1413,7 +1536,7 @@ void Game::Impl::spawnBoss()
     std::memset(&boss, 0, sizeof(boss));
     boss.active = true;
     boss.phase = 1;
-    boss.shape = randomInt(0, 3);
+    boss.shape = std::max(0, std::min(BossCount - 1, wave / 5 - 1));
     boss.x = (mapMinX + mapMaxX) * 0.5f;
     boss.y = mapMinY - 120.0f;
     boss.radius = 55.0f;
@@ -1426,7 +1549,11 @@ void Game::Impl::spawnBoss()
     boss.attackTimer = 0.0f;
     boss.teleportTimer = 4.0f;
     boss.spiralAngle = 0.0f;
-    const Color shapeColors[4] = {GREEN, PURPLE, RED, PLAYER_COLORS[0]};
+    boss.rotationDirection = 1.0f;
+    boss.telegraphDirection = -1;
+    boss.memoryFlashDirection = -1;
+    boss.memoryPlayer = -1;
+    const Color shapeColors[BossCount] = {PLAYER_COLORS[0], PURPLE, GREEN, RED, CYAN, GOLD};
     boss.trueColor = shapeColors[boss.shape];
     boss.color = {55, 55, 64, 255};
     const float weaponX[3] = {0.0f, 82.0f, -82.0f};
@@ -1440,6 +1567,8 @@ void Game::Impl::spawnBoss()
         boss.weapons[i].active = true;
     }
     enemies.clear();
+    enemyProjectiles.clear();
+    showNotice("CHEFE " + number(boss.shape + 1) + " DE " + number(BossCount));
 }
 
 void Game::Impl::bossWeaponPosition(int index, float& x, float& y) const
@@ -1451,7 +1580,8 @@ void Game::Impl::bossWeaponPosition(int index, float& x, float& y) const
     y = boss.y + s * weapon.relX + c * weapon.relY;
 }
 
-void Game::Impl::addEnemyProjectile(float x, float y, float angle, float speed, float radius, Color colorValue)
+void Game::Impl::addEnemyProjectile(float x, float y, float angle, float speed, float radius, Color colorValue,
+                                    int kind, int bounces, float damage)
 {
     Projectile projectile;
     projectile.x = x;
@@ -1459,11 +1589,241 @@ void Game::Impl::addEnemyProjectile(float x, float y, float angle, float speed, 
     projectile.vx = std::cos(angle) * speed;
     projectile.vy = std::sin(angle) * speed;
     projectile.radius = radius;
-    projectile.damage = 10.0f;
+    projectile.damage = damage;
     projectile.owner = -1;
     projectile.color = colorValue;
     projectile.trailCount = 0;
+    projectile.kind = kind;
+    projectile.bounces = bounces;
+    projectile.angle = angle;
+    projectile.rotationSpeed = kind == ProjectileSquare ? 4.2f : (kind == ProjectileX ? -5.0f : 0.0f);
     enemyProjectiles.push_back(projectile);
+}
+
+void Game::Impl::spawnBossDrone()
+{
+    if (boss.droneCount >= 50) return;
+    Enemy drone;
+    const float angle = random01() * PI * 2.0f;
+    drone.x = boss.x + std::cos(angle) * (boss.radius + 35.0f);
+    drone.y = boss.y + std::sin(angle) * (boss.radius + 35.0f);
+    drone.hp = 28.0f + playerCount * 5.0f;
+    drone.maxHp = drone.hp;
+    drone.speed = 360.0f + random01() * 90.0f;
+    drone.radius = 13.0f;
+    drone.angle = random01() * PI * 2.0f;
+    drone.rotationSpeed = (random01() < 0.5f ? -1.0f : 1.0f) * (4.0f + random01() * 3.0f);
+    drone.edges = 0;
+    drone.color = PLAYER_COLORS[0];
+    drone.kind = 1;
+    drone.targetPlayer = randomInt(0, std::max(0, playerCount - 1));
+    enemies.push_back(drone);
+    ++boss.droneCount;
+}
+
+void Game::Impl::spawnArrowWall(int direction)
+{
+    const float speed = 610.0f;
+    const int gap = randomInt(2, 8);
+    const int lanes = 12;
+    for (int lane = 0; lane < lanes; ++lane)
+    {
+        if (lane == gap || lane == gap + 1 || (random01() < 0.08f && lane > 0 && lane < lanes - 1)) continue;
+        if (direction == 0 || direction == 2)
+        {
+            const float x = mapMinX + (lane + 0.5f) * (mapMaxX - mapMinX) / lanes;
+            const bool downwards = direction == 2;
+            addEnemyProjectile(x, downwards ? mapMinY + 15.0f : mapMaxY - 15.0f,
+                               downwards ? PI * 0.5f : -PI * 0.5f, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
+        }
+        else
+        {
+            const float y = mapMinY + (lane + 0.5f) * (mapMaxY - mapMinY) / lanes;
+            const bool rightwards = direction == 1;
+            addEnemyProjectile(rightwards ? mapMinX + 15.0f : mapMaxX - 15.0f, y,
+                               rightwards ? 0.0f : PI, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
+        }
+    }
+    cameraShake = 13.0f;
+}
+
+void Game::Impl::startMemoryRound()
+{
+    int available[4];
+    int count = 0;
+    for (int direction = 0; direction < 4; ++direction)
+        if ((boss.memoryRemovedMask & (1u << direction)) == 0) available[count++] = direction;
+    if (count == 0) available[count++] = randomInt(0, 3);
+    for (int i = 0; i < 8; ++i) boss.memorySequence[i] = available[randomInt(0, count - 1)];
+    boss.memoryShowIndex = 0;
+    boss.memoryInputIndex = 0;
+    boss.memoryState = 1;
+    boss.stateTimer = 0.68f;
+    boss.memoryTimer = 60.0f;
+    boss.memoryFlashDirection = boss.memorySequence[0];
+    boss.memoryFlashTimer = 0.45f;
+    enemyProjectiles.clear();
+}
+
+void Game::Impl::failMemoryRound()
+{
+    if (boss.memoryPlayer < 0 || boss.memoryPlayer >= playerCount) return;
+    Player& player = players[boss.memoryPlayer];
+    --boss.memoryLives;
+    boss.memoryFlashDirection = boss.memoryInputIndex < 8 ? boss.memorySequence[boss.memoryInputIndex] : -1;
+    boss.memoryFlashTimer = 0.7f;
+    player.hp = std::max(0.0f, player.hp - player.maxHp / 3.0f);
+    player.invincible = 0.8f;
+    cameraShake = 34.0f;
+    rumble(player.pad, 1.0f, 900);
+    addParticles(player.x, player.y, RED, 45, 480.0f, 1.0f);
+    addFloatingText(player.x, player.y - 40.0f, "ERRO! CHANCES " + number(std::max(0, boss.memoryLives)) + "/3", RED);
+    if (boss.memoryLives <= 0)
+    {
+        const float left = player.x - mapMinX;
+        const float right = mapMaxX - player.x;
+        const float top = player.y - mapMinY;
+        const float bottom = mapMaxY - player.y;
+        const float nearest = std::min(std::min(left, right), std::min(top, bottom));
+        if (nearest == left) player.x = mapMinX + player.radius;
+        else if (nearest == right) player.x = mapMaxX - player.radius;
+        else if (nearest == top) player.y = mapMinY + player.radius;
+        else player.y = mapMaxY - player.radius;
+        player.hp = 0.0f;
+        player.pendingRevive = true;
+        addParticles(player.x, player.y, RED, 90, 720.0f, 1.5f);
+        addFloatingText(player.x, player.y - 55.0f, "MEMORIA CORROMPIDA", RED);
+        int replacement = -1;
+        for (int i = 0; i < playerCount; ++i) if (players[i].hp > 0.0f) { replacement = i; break; }
+        if (replacement < 0) { checkGameOver(); return; }
+        boss.memoryPlayer = replacement;
+        boss.memoryLives = 3;
+        boss.memoryRound = 1;
+        boss.memoryRemovedMask = 0;
+    }
+    boss.memoryState = 0;
+    boss.stateTimer = 1.1f;
+}
+
+void Game::Impl::setBossPhase(int phase)
+{
+    boss.phase = phase;
+    boss.attackTimer = 0.0f;
+    boss.state = 0;
+    boss.stateTimer = 0.0f;
+    boss.telegraphDirection = -1;
+    boss.laserActive = false;
+    boss.freezeActive = false;
+    boss.shootSuppressed = false;
+    boss.velocityX = 0.0f;
+    boss.velocityY = 0.0f;
+    boss.rotationDirection = 1.0f;
+    cameraShake = 30.0f;
+    if (phase == 2)
+    {
+        boss.color = boss.trueColor;
+        addFloatingText(boss.x, boss.y - 70.0f, "SISTEMA COMPROMETIDO!", boss.color);
+        if (boss.shape == BossX)
+        {
+            const float direction = random01() * PI * 2.0f;
+            boss.velocityX = std::cos(direction) * 230.0f;
+            boss.velocityY = std::sin(direction) * 230.0f;
+            boss.teleportTimer = 2.4f;
+        }
+        else if (boss.shape == BossSquare)
+        {
+            const float cx = (mapMinX + mapMaxX) * 0.5f;
+            const float cy = (mapMinY + mapMaxY) * 0.5f;
+            const float positions[4][2] = {
+                {cx, mapMinY + 55.0f}, {mapMaxX - 55.0f, cy},
+                {cx, mapMaxY - 55.0f}, {mapMinX + 55.0f, cy}
+            };
+            for (int i = 0; i < 4; ++i)
+            {
+                boss.parts[i].x = positions[i][0];
+                boss.parts[i].y = positions[i][1];
+                boss.parts[i].hp = boss.maxHp * 0.25f;
+                boss.parts[i].maxHp = boss.parts[i].hp;
+                boss.parts[i].active = true;
+                boss.parts[i].collectible = false;
+                boss.parts[i].collected = false;
+                boss.parts[i].collector = -1;
+            }
+        }
+        else if (boss.shape == BossCircle || boss.shape == BossDpad || boss.shape == BossTouchpad)
+        {
+            boss.x = (mapMinX + mapMaxX) * 0.5f;
+            boss.y = (mapMinY + mapMaxY) * 0.5f;
+        }
+        if (boss.shape == BossCircle) boss.attackTimer = -0.4f;
+        if (boss.shape == BossDpad) boss.attackTimer = 0.0f;
+        if (boss.shape == BossTouchpad) boss.abilityTimer = 25.0f;
+    }
+    else
+    {
+        boss.color = RED;
+        addFloatingText(boss.x, boss.y - 70.0f, "PROTOCOLO DE FURIA!", RED);
+        enemyProjectiles.clear();
+        if (boss.shape == BossX)
+        {
+            boss.x = (mapMinX + mapMaxX) * 0.5f;
+            boss.y = (mapMinY + mapMaxY) * 0.5f;
+            boss.sweepRemaining = 340.0f * PI / 180.0f;
+            boss.rotationDirection = 1.0f;
+            boss.laserActive = true;
+            boss.droneCount = 0;
+            boss.droneTimer = 0.0f;
+        }
+        else if (boss.shape == BossSquare)
+        {
+            boss.x = (mapMinX + mapMaxX) * 0.5f;
+            boss.y = (mapMinY + mapMaxY) * 0.5f;
+            boss.teleportTimer = 1.0f;
+        }
+        else if (boss.shape == BossTriangle) boss.teleportTimer = 4.0f;
+        else if (boss.shape == BossCircle)
+        {
+            boss.state = 0;
+            boss.stateTimer = 1.0f;
+            boss.bounceCount = 0;
+        }
+        else if (boss.shape == BossDpad)
+        {
+            boss.x = (mapMinX + mapMaxX) * 0.5f;
+            boss.y = (mapMinY + mapMaxY) * 0.5f;
+            boss.memoryRound = 1;
+            boss.memoryLives = 3;
+            boss.memoryState = 0;
+            boss.memoryRemovedMask = 0;
+            boss.memoryPlayer = randomInt(0, std::max(0, playerCount - 1));
+            for (int i = 0; i < playerCount; ++i)
+                if (players[boss.memoryPlayer].hp <= 0.0f && players[i].hp > 0.0f) boss.memoryPlayer = i;
+            boss.stateTimer = 1.5f;
+            boss.memoryFlashDirection = -1;
+            enemies.clear();
+        }
+        else if (boss.shape == BossTouchpad)
+        {
+            boss.abilityTimer = playerCount > 0 ? players[0].skillCooldownMax : 12.0f;
+            boss.stateTimer = 0.0f;
+        }
+    }
+    addParticles(boss.x, boss.y, boss.color, 80, 430.0f, 1.3f);
+    for (int i = 0; i < playerCount; ++i) rumble(players[i].pad, 0.8f, 600);
+}
+
+void Game::Impl::damageBossPart(int index, float damage)
+{
+    if (index < 0 || index >= 4 || !boss.parts[index].active) return;
+    BossPart& part = boss.parts[index];
+    part.hp -= damage;
+    if (part.hp > 0.0f) return;
+    part.hp = 0.0f;
+    part.active = false;
+    part.collectible = true;
+    cameraShake = 18.0f;
+    addParticles(part.x, part.y, PURPLE, 34, 420.0f, 1.0f);
+    addFloatingText(part.x, part.y - 30.0f, "RECOLHA O TRACO", GOLD);
 }
 
 void Game::Impl::updateBoss(float dt)
@@ -1472,8 +1832,9 @@ void Game::Impl::updateBoss(float dt)
     if (boss.y < mapMinY + 160.0f) boss.y += 110.0f * dt;
     if (anyTimeStop()) return;
 
-    boss.angle += 1.6f * dt;
+    if (boss.phase == 1) boss.angle += 1.6f * dt;
     boss.attackTimer += dt;
+    boss.memoryFlashTimer = std::max(0.0f, boss.memoryFlashTimer - dt);
     Player* target = nullptr;
     float nearest = 1e30f;
     for (int i = 0; i < playerCount; ++i)
@@ -1504,59 +1865,209 @@ void Game::Impl::updateBoss(float dt)
         bool allDestroyed = true;
         for (int i = 0; i < 3; ++i) allDestroyed = allDestroyed && !boss.weapons[i].active;
         if (allDestroyed)
-        {
-            boss.phase = 2;
-            boss.color = boss.trueColor;
-            boss.attackTimer = 0.0f;
-            cameraShake = 30.0f;
-            addParticles(boss.x, boss.y, boss.color, 70, 380.0f, 1.2f);
-            addFloatingText(boss.x, boss.y - 70.0f, "SISTEMA COMPROMETIDO!", boss.color);
-        }
+            setBossPhase(2);
     }
     else if (boss.phase == 2)
     {
-        if (boss.shape == 1) boss.x += std::cos(boss.angle) * 84.0f * dt;
-        else if (boss.shape == 2) boss.x += std::cos(boss.angle) * 108.0f * dt;
-        if (boss.shape == 0 && boss.attackTimer >= 0.9f)
+        if (boss.shape == BossX)
+        {
+            boss.angle += boss.rotationDirection * 2.6f * dt;
+            boss.teleportTimer -= dt;
+            if (boss.teleportTimer <= 0.0f)
+            {
+                const float direction = random01() * PI * 2.0f;
+                boss.velocityX = std::cos(direction) * 230.0f;
+                boss.velocityY = std::sin(direction) * 230.0f;
+                boss.teleportTimer = 1.8f + random01() * 1.8f;
+            }
+            boss.x += boss.velocityX * dt;
+            boss.y += boss.velocityY * dt;
+            bool bounced = false;
+            if (boss.x <= mapMinX + boss.radius || boss.x >= mapMaxX - boss.radius) { boss.velocityX = -boss.velocityX; bounced = true; }
+            if (boss.y <= mapMinY + boss.radius || boss.y >= mapMaxY - boss.radius) { boss.velocityY = -boss.velocityY; bounced = true; }
+            boss.x = clampf(boss.x, mapMinX + boss.radius, mapMaxX - boss.radius);
+            boss.y = clampf(boss.y, mapMinY + boss.radius, mapMaxY - boss.radius);
+            if (bounced) { boss.rotationDirection = -boss.rotationDirection; cameraShake = 9.0f; }
+            if (boss.attackTimer >= 0.45f)
+            {
+                boss.attackTimer = 0.0f;
+                for (int tip = 0; tip < 4; ++tip)
+                {
+                    const float angle = boss.angle + tip * PI * 0.5f;
+                    addEnemyProjectile(boss.x + std::cos(angle) * boss.radius, boss.y + std::sin(angle) * boss.radius,
+                                       angle, 430.0f, 9.0f, boss.trueColor, ProjectileX);
+                }
+            }
+        }
+        else if (boss.shape == BossSquare)
+        {
+            int collected = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                BossPart& part = boss.parts[i];
+                if (part.active && boss.attackTimer >= 0.95f)
+                {
+                    Player* partTarget = target;
+                    float partNearest = distanceSquared(part.x, part.y, target->x, target->y);
+                    for (int p = 0; p < playerCount; ++p)
+                    {
+                        if (players[p].hp <= 0.0f) continue;
+                        const float d = distanceSquared(part.x, part.y, players[p].x, players[p].y);
+                        if (d < partNearest) { partNearest = d; partTarget = &players[p]; }
+                    }
+                    addEnemyProjectile(part.x, part.y, angleTo(part.x, part.y, partTarget->x, partTarget->y),
+                                       400.0f, 9.0f, PURPLE, ProjectileSquare);
+                }
+                if (part.collectible)
+                {
+                    for (int p = 0; p < playerCount; ++p)
+                    {
+                        if (players[p].hp <= 0.0f || distanceSquared(part.x, part.y, players[p].x, players[p].y) > 58.0f * 58.0f) continue;
+                        part.collectible = false;
+                        part.collected = true;
+                        part.collector = p;
+                        addFloatingText(players[p].x, players[p].y - 35.0f, "TRACO RECUPERADO", GOLD);
+                        rumble(players[p].pad, 0.55f, 280);
+                        break;
+                    }
+                }
+                if (part.collected)
+                {
+                    ++collected;
+                    const Player& carrier = players[std::max(0, std::min(playerCount - 1, part.collector))];
+                    const float orbit = lastTick / 500.0f + i * PI * 0.5f;
+                    part.x = carrier.x + std::cos(orbit) * 45.0f;
+                    part.y = carrier.y + std::sin(orbit) * 45.0f;
+                }
+            }
+            if (boss.attackTimer >= 0.95f) boss.attackTimer = 0.0f;
+            if (collected == 4) setBossPhase(3);
+        }
+        else if (boss.shape == BossTriangle && boss.attackTimer >= 0.9f)
         {
             boss.attackTimer = 0.0f;
             const float base = angleTo(boss.x, boss.y, target->x, target->y);
             for (int i = -1; i <= 1; ++i) addEnemyProjectile(boss.x, boss.y, base + i * 0.35f, 340.0f, 8.0f, boss.trueColor);
         }
-        else if (boss.shape == 1 && boss.attackTimer >= 0.7f)
+        else if (boss.shape == BossCircle && boss.attackTimer >= 3.0f)
         {
             boss.attackTimer = 0.0f;
+            const float base = random01() * PI * 0.5f;
             for (int i = 0; i < 4; ++i)
+                addEnemyProjectile(boss.x, boss.y, base + i * PI * 0.5f, 330.0f, boss.radius * 0.5f,
+                                   boss.trueColor, ProjectileDebris, 4, 24.0f);
+        }
+        else if (boss.shape == BossDpad)
+        {
+            boss.x = (mapMinX + mapMaxX) * 0.5f;
+            boss.y = (mapMinY + mapMaxY) * 0.5f;
+            if (boss.state == 0 && boss.attackTimer >= 2.7f)
             {
-                const float angle = PI * 0.5f * i;
-                addEnemyProjectile(boss.x, boss.y, angle, 280.0f, 9.0f, boss.trueColor);
-                addEnemyProjectile(boss.x, boss.y, angle, 200.0f, 7.0f, boss.trueColor);
+                boss.state = 1;
+                boss.stateTimer = 1.0f;
+                boss.telegraphDirection = randomInt(0, 3);
+                boss.attackTimer = 0.0f;
+            }
+            else if (boss.state == 1)
+            {
+                boss.stateTimer -= dt;
+                if (boss.stateTimer <= 0.0f)
+                {
+                    spawnArrowWall(boss.telegraphDirection);
+                    boss.telegraphDirection = -1;
+                    boss.state = 0;
+                }
             }
         }
-        else if (boss.shape == 2 && boss.attackTimer >= 0.28f)
+        else if (boss.shape == BossTouchpad)
         {
-            boss.attackTimer = 0.0f;
-            for (int i = 0; i < 4; ++i) addEnemyProjectile(boss.x, boss.y, boss.angle * 2.0f + PI * 0.5f * i, 260.0f, 9.0f, boss.trueColor);
-        }
-        else if (boss.shape == 3 && boss.attackTimer >= 1.1f)
-        {
-            boss.attackTimer = 0.0f;
-            for (int row = -1; row <= 1; row += 2)
-                for (int i = -5; i <= 5; ++i)
-                    addEnemyProjectile(boss.x + i * 80.0f, boss.y, row > 0 ? PI * 0.5f : -PI * 0.5f, 300.0f, 8.0f, boss.trueColor);
+            boss.abilityTimer -= dt;
+            if (!boss.shootSuppressed && boss.abilityTimer <= 0.0f)
+            {
+                boss.shootSuppressed = true;
+                boss.stateTimer = 15.0f;
+                boss.attackTimer = 0.0f;
+                projectiles.clear();
+                showNotice("TIROS DESINTEGRADOS POR 15S");
+            }
+            if (boss.shootSuppressed)
+            {
+                boss.stateTimer -= dt;
+                projectiles.clear();
+                if (boss.attackTimer >= 0.48f)
+                {
+                    boss.attackTimer = 0.0f;
+                    const int touchKinds[4] = {ProjectileTriangle, ProjectileX, ProjectileSquare, ProjectileOrb};
+                    const int kind = touchKinds[randomInt(0, 3)];
+                    const float base = angleTo(boss.x, boss.y, target->x, target->y);
+                    for (int i = -1; i <= 1; ++i)
+                        addEnemyProjectile(boss.x, boss.y, base + i * 0.22f, 410.0f, 10.0f,
+                                           i == 0 ? RED : boss.trueColor, kind, 0, 14.0f);
+                }
+                if (boss.stateTimer <= 0.0f)
+                {
+                    boss.shootSuppressed = false;
+                    boss.abilityTimer = 25.0f;
+                    showNotice("TIROS RESTAURADOS");
+                }
+            }
         }
     }
     else
     {
         const float targetAngle = angleTo(boss.x, boss.y, target->x, target->y);
-        const float chaseSpeed = boss.shape == 2 ? 130.0f : (boss.shape == 0 ? 100.0f : (boss.shape == 1 ? 80.0f : 90.0f));
-        boss.x += std::cos(targetAngle) * chaseSpeed * dt;
-        boss.y += std::sin(targetAngle) * chaseSpeed * dt;
-        boss.x = clampf(boss.x, mapMinX + boss.radius, mapMaxX - boss.radius);
-        boss.y = clampf(boss.y, mapMinY + boss.radius, mapMaxY - boss.radius);
-
-        if (boss.shape == 0)
+        if (boss.shape == BossX)
         {
+            const float rotationSpeed = 0.92f;
+            boss.angle += boss.rotationDirection * rotationSpeed * dt;
+            boss.sweepRemaining -= rotationSpeed * dt;
+            boss.laserActive = true;
+            if (boss.rotationDirection < 0.0f && boss.droneCount < 50)
+            {
+                boss.droneTimer -= dt;
+                while (boss.droneTimer <= 0.0f && boss.droneCount < 50)
+                {
+                    spawnBossDrone();
+                    boss.droneTimer += 0.11f;
+                }
+            }
+            if (boss.sweepRemaining <= 0.0f)
+            {
+                boss.rotationDirection = -boss.rotationDirection;
+                boss.sweepRemaining = 340.0f * PI / 180.0f;
+                if (boss.rotationDirection < 0.0f) { boss.droneCount = 0; boss.droneTimer = 0.0f; }
+            }
+            const float laserEndX = boss.x + std::cos(boss.angle) * 2800.0f;
+            const float laserEndY = boss.y + std::sin(boss.angle) * 2800.0f;
+            for (int p = 0; p < playerCount; ++p)
+                if (players[p].hp > 0.0f && pointSegmentDistanceSquared(players[p].x, players[p].y, boss.x, boss.y, laserEndX, laserEndY) < 25.0f * 25.0f)
+                    damagePlayer(players[p], 14.0f);
+        }
+        else if (boss.shape == BossSquare)
+        {
+            boss.angle += 2.8f * dt;
+            boss.teleportTimer -= dt;
+            if (boss.teleportTimer <= 0.0f)
+            {
+                const float margin = 95.0f;
+                const int corner = boss.state++ % 4;
+                const float oldX = boss.x;
+                const float oldY = boss.y;
+                boss.x = (corner == 0 || corner == 3) ? mapMinX + margin : mapMaxX - margin;
+                boss.y = (corner < 2) ? mapMinY + margin : mapMaxY - margin;
+                addParticles(oldX, oldY, PURPLE, 30, 420.0f, 0.8f);
+                addParticles(boss.x, boss.y, PURPLE, 40, 480.0f, 1.0f);
+                for (int i = 0; i < 14; ++i)
+                    addEnemyProjectile(boss.x, boss.y, i * PI * 2.0f / 14.0f, 300.0f + (i % 2) * 90.0f,
+                                       11.0f, PURPLE, ProjectileSquare, 0, 16.0f);
+                boss.teleportTimer = 5.0f;
+                boss.attackTimer = 0.0f;
+            }
+        }
+        else if (boss.shape == BossTriangle)
+        {
+            boss.x += std::cos(targetAngle) * 100.0f * dt;
+            boss.y += std::sin(targetAngle) * 100.0f * dt;
             boss.teleportTimer -= dt;
             if (boss.teleportTimer <= 0.0f)
             {
@@ -1564,7 +2075,6 @@ void Game::Impl::updateBoss(float dt)
                 const float angle = random01() * PI * 2.0f;
                 boss.x = clampf(target->x + std::cos(angle) * 120.0f, mapMinX + boss.radius, mapMaxX - boss.radius);
                 boss.y = clampf(target->y + std::sin(angle) * 120.0f, mapMinY + boss.radius, mapMaxY - boss.radius);
-                cameraShake = 20.0f;
                 addParticles(boss.x, boss.y, boss.trueColor, 26, 360.0f, 0.8f);
             }
             if (boss.attackTimer >= 0.7f)
@@ -1573,26 +2083,194 @@ void Game::Impl::updateBoss(float dt)
                 for (int i = -1; i <= 1; ++i) addEnemyProjectile(boss.x, boss.y, targetAngle + i * 0.28f, 490.0f, 11.0f, RED);
             }
         }
-        else if (boss.shape == 1)
+        else if (boss.shape == BossCircle)
         {
-            boss.spiralAngle += 4.5f * dt;
-            if (boss.attackTimer >= 0.2f)
+            if (boss.state == 0)
             {
-                boss.attackTimer = 0.0f;
-                addEnemyProjectile(boss.x, boss.y, boss.spiralAngle, 400.0f, 9.0f, boss.trueColor);
-                addEnemyProjectile(boss.x, boss.y, boss.spiralAngle + PI, 400.0f, 9.0f, boss.trueColor);
+                boss.stateTimer -= dt;
+                boss.velocityX = boss.velocityY = 0.0f;
+                if (boss.stateTimer <= 0.0f)
+                {
+                    boss.velocityX = std::cos(targetAngle) * 1120.0f;
+                    boss.velocityY = std::sin(targetAngle) * 1120.0f;
+                    boss.bounceCount = 0;
+                    boss.state = 1;
+                    cameraShake = 25.0f;
+                }
+            }
+            else if (boss.state == 1)
+            {
+                boss.x += boss.velocityX * dt;
+                boss.y += boss.velocityY * dt;
+                bool bounced = false;
+                if (boss.x <= mapMinX + boss.radius || boss.x >= mapMaxX - boss.radius) { boss.velocityX = -boss.velocityX; bounced = true; }
+                if (boss.y <= mapMinY + boss.radius || boss.y >= mapMaxY - boss.radius) { boss.velocityY = -boss.velocityY; bounced = true; }
+                boss.x = clampf(boss.x, mapMinX + boss.radius, mapMaxX - boss.radius);
+                boss.y = clampf(boss.y, mapMinY + boss.radius, mapMaxY - boss.radius);
+                if (bounced)
+                {
+                    ++boss.bounceCount;
+                    boss.velocityX *= 0.72f;
+                    boss.velocityY *= 0.72f;
+                    cameraShake = 28.0f;
+                    for (int i = 0; i < 6; ++i)
+                        addEnemyProjectile(boss.x, boss.y, random01() * PI * 2.0f, 260.0f + random01() * 180.0f,
+                                           9.0f, RED, ProjectileDebris, 0, 13.0f);
+                    if (boss.bounceCount >= 3)
+                    {
+                        boss.state = 2;
+                        boss.stateTimer = 1.4f;
+                    }
+                }
+                for (int p = 0; p < playerCount; ++p)
+                {
+                    const float radius = boss.radius + players[p].radius;
+                    if (players[p].hp > 0.0f && distanceSquared(boss.x, boss.y, players[p].x, players[p].y) <= radius * radius)
+                        damagePlayer(players[p], 65.0f);
+                }
+            }
+            else
+            {
+                boss.stateTimer -= dt;
+                if (boss.stateTimer <= 0.0f) { boss.state = 0; boss.stateTimer = 1.0f; }
             }
         }
-        else if (boss.shape == 2 && boss.attackTimer >= 0.65f)
+        else if (boss.shape == BossDpad)
         {
-            boss.attackTimer = 0.0f;
-            for (int i = -2; i <= 2; ++i) addEnemyProjectile(boss.x, boss.y, targetAngle + i * 0.22f, 470.0f, 10.0f, RED);
+            if (boss.memoryPlayer < 0 || boss.memoryPlayer >= playerCount) return;
+            Player& memoryPlayer = players[boss.memoryPlayer];
+            if (boss.memoryState == 0)
+            {
+                const float holdX = boss.x + 190.0f;
+                const float holdY = boss.y;
+                memoryPlayer.x += (holdX - memoryPlayer.x) * std::min(1.0f, dt * 3.2f);
+                memoryPlayer.y += (holdY - memoryPlayer.y) * std::min(1.0f, dt * 3.2f);
+                boss.stateTimer -= dt;
+                if (boss.stateTimer <= 0.0f) startMemoryRound();
+            }
+            else if (boss.memoryState == 1)
+            {
+                boss.stateTimer -= dt;
+                if (boss.stateTimer <= 0.0f)
+                {
+                    ++boss.memoryShowIndex;
+                    if (boss.memoryShowIndex >= 8)
+                    {
+                        boss.memoryState = 2;
+                        boss.memoryFlashDirection = -1;
+                        boss.memoryTimer = 60.0f;
+                    }
+                    else
+                    {
+                        boss.memoryFlashDirection = boss.memorySequence[boss.memoryShowIndex];
+                        boss.memoryFlashTimer = 0.44f;
+                        boss.stateTimer = 0.68f;
+                    }
+                }
+            }
+            else if (boss.memoryState == 2)
+            {
+                boss.memoryTimer -= dt;
+                int input = -1;
+                if (pressed(memoryPlayer.pad, PAD_UP)) input = 0;
+                else if (pressed(memoryPlayer.pad, PAD_RIGHT)) input = 1;
+                else if (pressed(memoryPlayer.pad, PAD_DOWN)) input = 2;
+                else if (pressed(memoryPlayer.pad, PAD_LEFT)) input = 3;
+                if (input >= 0)
+                {
+                    if (input != boss.memorySequence[boss.memoryInputIndex]) { failMemoryRound(); return; }
+                    boss.memoryFlashDirection = input;
+                    boss.memoryFlashTimer = 0.28f;
+                    ++boss.memoryInputIndex;
+                    if (boss.memoryInputIndex >= 8)
+                    {
+                        boss.memoryState = 3;
+                        boss.memoryFlashDirection = -2;
+                        boss.memoryFlashTimer = 999.0f;
+                        addFloatingText(memoryPlayer.x, memoryPlayer.y - 40.0f, "SEQUENCIA CORRETA!", GOLD);
+                    }
+                }
+                if (boss.memoryTimer <= 0.0f) { failMemoryRound(); return; }
+            }
+            else if (boss.memoryState == 3)
+            {
+                int input = -1;
+                if (pressed(memoryPlayer.pad, PAD_UP)) input = 0;
+                else if (pressed(memoryPlayer.pad, PAD_RIGHT)) input = 1;
+                else if (pressed(memoryPlayer.pad, PAD_DOWN)) input = 2;
+                else if (pressed(memoryPlayer.pad, PAD_LEFT)) input = 3;
+                if (input >= 0 && (boss.memoryRemovedMask & (1u << input)) == 0)
+                {
+                    if (boss.memoryRound >= 4)
+                    {
+                        boss.memoryState = 4;
+                        boss.memoryFlashDirection = -1;
+                        boss.rageHp = boss.maxRageHp * 0.5f;
+                        showNotice("MEMORIA QUEBRADA - ATAQUE!");
+                    }
+                    else
+                    {
+                        boss.memoryRemovedMask |= 1u << input;
+                        ++boss.memoryRound;
+                        boss.memoryState = 0;
+                        boss.stateTimer = 0.8f;
+                        boss.memoryFlashDirection = -1;
+                        addParticles(boss.x, boss.y, GOLD, 28, 350.0f, 0.8f);
+                    }
+                }
+            }
+            else if (boss.attackTimer >= 0.55f)
+            {
+                boss.attackTimer = 0.0f;
+                const float base = angleTo(boss.x, boss.y, target->x, target->y);
+                for (int i = -2; i <= 2; ++i)
+                    addEnemyProjectile(boss.x, boss.y, base + i * 0.18f, 520.0f, 12.0f, RED, ProjectileArrow, 0, 17.0f);
+            }
         }
-        else if (boss.shape == 3 && boss.attackTimer >= 0.8f)
+        else if (boss.shape == BossTouchpad)
         {
-            boss.attackTimer = 0.0f;
-            for (int i = 0; i < 8; ++i) addEnemyProjectile(boss.x, boss.y, i * PI * 0.25f, 440.0f, 10.0f, boss.trueColor);
+            if (boss.freezeActive)
+            {
+                boss.stateTimer -= dt;
+                if (boss.stateTimer <= 0.0f)
+                {
+                    boss.stateTimer = 0.32f;
+                    const float step = 31.0f;
+                    boss.x += std::cos(targetAngle) * step;
+                    boss.y += std::sin(targetAngle) * step;
+                    const float d = std::sqrt(std::max(1.0f, nearest));
+                    rumble(target->pad, clampf(1.0f - d / 900.0f, 0.18f, 1.0f), 430);
+                    cameraShake = std::max(cameraShake, clampf(18.0f - d / 70.0f, 2.0f, 18.0f));
+                    if (d < boss.radius + target->radius + 20.0f)
+                    {
+                        damagePlayer(*target, 50.0f);
+                        boss.freezeActive = false;
+                        boss.abilityTimer = target->skillCooldownMax;
+                        showNotice("COLAPSO TEMPORAL");
+                    }
+                }
+            }
+            else
+            {
+                boss.abilityTimer -= dt;
+                if (boss.attackTimer >= 1.25f)
+                {
+                    boss.attackTimer = 0.0f;
+                    const int touchKinds[4] = {ProjectileTriangle, ProjectileX, ProjectileSquare, ProjectileOrb};
+                    addEnemyProjectile(boss.x, boss.y, targetAngle, 430.0f, 11.0f, GOLD,
+                                       touchKinds[randomInt(0, 3)], 0, 15.0f);
+                }
+                if (boss.abilityTimer <= 0.0f)
+                {
+                    boss.freezeActive = true;
+                    boss.stateTimer = 0.0f;
+                    enemyProjectiles.clear();
+                    showNotice("TEMPO BLOQUEADO - USE SUA HABILIDADE!");
+                }
+            }
         }
+        boss.x = clampf(boss.x, mapMinX + boss.radius, mapMaxX - boss.radius);
+        boss.y = clampf(boss.y, mapMinY + boss.radius, mapMaxY - boss.radius);
     }
 }
 
@@ -1621,16 +2299,12 @@ void Game::Impl::damageBoss(float damage, int weaponIndex)
         if (boss.hp <= 0.0f)
         {
             boss.hp = 0.0f;
-            boss.phase = 3;
-            boss.color = RED;
-            boss.attackTimer = 0.0f;
-            cameraShake = 30.0f;
-            addParticles(boss.x, boss.y, RED, 80, 430.0f, 1.3f);
-            addFloatingText(boss.x, boss.y - 70.0f, "MODO FURIA!", RED);
+            setBossPhase(3);
         }
     }
     else if (boss.phase == 3)
     {
+        if (boss.shape == BossDpad && boss.memoryState != 4) return;
         boss.rageHp -= damage;
         if (boss.rageHp <= 0.0f) defeatBoss();
     }
@@ -1654,7 +2328,7 @@ void Game::Impl::defeatBoss()
     boss.active = false;
     enemyProjectiles.clear();
     bossDelay = 3.5f;
-    enemyEdges = shape == 0 ? 3 : (shape == 1 ? 4 : 0);
+    enemyEdges = shape == BossTriangle ? 3 : (shape == BossSquare ? 4 : 0);
     enemyColor = theme;
     mapMinX -= 300.0f;
     mapMinY -= 300.0f;
@@ -1704,11 +2378,27 @@ void Game::Impl::shoot(Player& player, int playerIndex)
                 }
             }
         }
+        else if (boss.shape == BossSquare && boss.phase == 2)
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!boss.parts[i].active) continue;
+                const float d = distanceSquared(player.x, player.y, boss.parts[i].x, boss.parts[i].y);
+                if (d < nearest)
+                {
+                    nearest = d;
+                    targetX = boss.parts[i].x;
+                    targetY = boss.parts[i].y;
+                    found = true;
+                }
+            }
+        }
         else
         {
             const float d = distanceSquared(player.x, player.y, boss.x, boss.y);
             if (d < nearest)
             {
+                nearest = d;
                 targetX = boss.x;
                 targetY = boss.y;
                 found = true;
@@ -1728,6 +2418,10 @@ void Game::Impl::shoot(Player& player, int playerIndex)
     projectile.owner = playerIndex;
     projectile.color = player.color;
     projectile.trailCount = 0;
+    projectile.kind = ProjectileOrb;
+    projectile.bounces = 0;
+    projectile.angle = angle;
+    projectile.rotationSpeed = 0.0f;
     projectiles.push_back(projectile);
     player.fireTimer = player.fireRate;
 }
@@ -1837,6 +2531,21 @@ void Game::Impl::handleProjectileCollisions(float dt)
                     }
                 }
             }
+            else if (boss.shape == BossSquare && boss.phase == 2)
+            {
+                for (int part = 0; part < 4; ++part)
+                {
+                    if (!boss.parts[part].active) continue;
+                    const float radius = projectile.radius + 34.0f;
+                    if (distanceSquared(projectile.x, projectile.y, boss.parts[part].x, boss.parts[part].y) <= radius * radius)
+                    {
+                        damageBossPart(part, projectile.damage * 0.5f);
+                        if (projectile.owner >= 0) players[projectile.owner].score += 5;
+                        hit = true;
+                        break;
+                    }
+                }
+            }
             else
             {
                 const float radius = projectile.radius + boss.radius;
@@ -1904,7 +2613,8 @@ void Game::Impl::handleProjectileCollisions(float dt)
 
 void Game::Impl::handleEnemies(float dt)
 {
-    const bool stopped = anyTimeStop();
+    const bool stopped = anyTimeStop() ||
+        (boss.active && boss.shape == BossTouchpad && boss.phase == 3 && boss.freezeActive);
     for (int i = static_cast<int>(enemies.size()) - 1; i >= 0; --i)
     {
         Enemy& enemy = enemies[i];
@@ -1912,7 +2622,9 @@ void Game::Impl::handleEnemies(float dt)
         {
             Player* target = nullptr;
             float nearest = 1e30f;
-            for (int p = 0; p < playerCount; ++p)
+            if (enemy.kind == 1 && enemy.targetPlayer >= 0 && enemy.targetPlayer < playerCount && players[enemy.targetPlayer].hp > 0.0f)
+                target = &players[enemy.targetPlayer];
+            for (int p = 0; p < playerCount && !target; ++p)
             {
                 if (players[p].hp <= 0.0f) continue;
                 const float d = distanceSquared(enemy.x, enemy.y, players[p].x, players[p].y);
@@ -1941,7 +2653,7 @@ void Game::Impl::handleEnemies(float dt)
                 const float radius = enemy.radius + players[p].radius;
                 if (distanceSquared(enemy.x, enemy.y, players[p].x, players[p].y) <= radius * radius)
                 {
-                    damagePlayer(players[p], 15.0f);
+                    damagePlayer(players[p], enemy.kind == 1 ? 12.0f : 15.0f);
                     addParticles(enemy.x, enemy.y, enemy.color, 16, 330.0f, 0.8f);
                     enemies.erase(enemies.begin() + i);
                     consumed = true;
@@ -1959,6 +2671,28 @@ void Game::Impl::handleEnemies(float dt)
         {
             projectile.x += projectile.vx * dt;
             projectile.y += projectile.vy * dt;
+            projectile.angle += projectile.rotationSpeed * dt;
+            if (projectile.bounces > 0)
+            {
+                bool bounced = false;
+                if (projectile.x <= mapMinX + projectile.radius || projectile.x >= mapMaxX - projectile.radius)
+                {
+                    projectile.vx = -projectile.vx;
+                    bounced = true;
+                }
+                if (projectile.y <= mapMinY + projectile.radius || projectile.y >= mapMaxY - projectile.radius)
+                {
+                    projectile.vy = -projectile.vy;
+                    bounced = true;
+                }
+                if (bounced)
+                {
+                    --projectile.bounces;
+                    projectile.x = clampf(projectile.x, mapMinX + projectile.radius, mapMaxX - projectile.radius);
+                    projectile.y = clampf(projectile.y, mapMinY + projectile.radius, mapMaxY - projectile.radius);
+                    cameraShake = std::max(cameraShake, 5.0f);
+                }
+            }
         }
         bool hit = false;
         if (!stopped)
@@ -1981,13 +2715,27 @@ void Game::Impl::handleEnemies(float dt)
             {
                 Wall& wall = walls[wallIndex];
                 if (projectile.x < wall.x || projectile.x > wall.x + wall.w || projectile.y < wall.y || projectile.y > wall.y + wall.h) continue;
+                if (projectile.bounces > 0)
+                {
+                    const float leftDistance = std::abs(projectile.x - wall.x);
+                    const float rightDistance = std::abs(projectile.x - (wall.x + wall.w));
+                    const float topDistance = std::abs(projectile.y - wall.y);
+                    const float bottomDistance = std::abs(projectile.y - (wall.y + wall.h));
+                    if (std::min(leftDistance, rightDistance) < std::min(topDistance, bottomDistance)) projectile.vx = -projectile.vx;
+                    else projectile.vy = -projectile.vy;
+                    --projectile.bounces;
+                    projectile.x += projectile.vx * dt * 2.0f;
+                    projectile.y += projectile.vy * dt * 2.0f;
+                    cameraShake = std::max(cameraShake, 5.0f);
+                    break;
+                }
                 wall.hp -= 1.0f;
                 if (wall.hp <= 0.0f) walls.erase(walls.begin() + wallIndex);
                 hit = true;
                 break;
             }
         }
-        if (hit || projectile.x < mapMinX - 200.0f || projectile.x > mapMaxX + 200.0f || projectile.y < mapMinY - 200.0f || projectile.y > mapMaxY + 200.0f)
+        if (hit || projectile.x < mapMinX - projectile.radius || projectile.x > mapMaxX + projectile.radius || projectile.y < mapMinY - projectile.radius || projectile.y > mapMaxY + projectile.radius)
             enemyProjectiles.erase(enemyProjectiles.begin() + i);
     }
 }
@@ -2104,8 +2852,57 @@ void Game::Impl::updatePlaying(float dt)
         player.fireTimer = std::max(0.0f, player.fireTimer - dt);
         player.cosmeticAnimation += dt;
 
-        float moveX = axis(player.pad, 0);
-        float moveY = axis(player.pad, 1);
+        const bool skillPressed = pressed(player.pad, player.keys[ActionSkill]);
+        if (skillPressed && boss.active && boss.shape == BossTouchpad && boss.phase == 3 && boss.freezeActive && player.skillCooldown <= 0.0f)
+        {
+            boss.freezeActive = false;
+            boss.abilityTimer = player.skillCooldownMax;
+            player.timeStop = 0.0f;
+            player.skillCooldown = player.skillCooldownMax;
+            addParticles(player.x, player.y, player.color, 70, 520.0f, 1.2f);
+            addParticles(boss.x, boss.y, GOLD, 70, 520.0f, 1.2f);
+            addFloatingText(player.x, player.y - 38.0f, "TEMPO ANULADO!", GOLD);
+            showNotice("HABILIDADES TEMPORAIS ANULADAS");
+            rumble(player.pad, 0.9f, 700);
+            cameraShake = 36.0f;
+        }
+        else if (skillPressed && player.skillCooldown <= 0.0f && player.timeStop <= 0.0f)
+        {
+            player.timeStop = player.skillDuration;
+            player.skillCooldown = player.skillCooldownMax;
+            addParticles(player.x, player.y, player.color, 44, 390.0f, 1.0f);
+            addFloatingText(player.x, player.y - 30.0f, "TEMPO PARADO!", player.color);
+            rumble(player.pad, 0.6f, 500);
+        }
+
+        float moveX = 0.0f;
+        float moveY = 0.0f;
+        const bool touchpadMovement = boss.active && boss.shape == BossTouchpad;
+        if (touchpadMovement)
+        {
+            Pad& input = pads[player.pad];
+            if (input.touchActive)
+            {
+                if (!player.touchTracking || !input.previousTouchActive)
+                {
+                    player.touchTracking = true;
+                    player.touchAnchorX = input.touchX;
+                    player.touchAnchorY = input.touchY;
+                }
+                moveX = clampf((input.touchX - player.touchAnchorX) / 180.0f, -1.0f, 1.0f);
+                moveY = clampf((input.touchY - player.touchAnchorY) / 180.0f, -1.0f, 1.0f);
+            }
+            else player.touchTracking = false;
+        }
+        else
+        {
+            player.touchTracking = false;
+            moveX = axis(player.pad, 0);
+            moveY = axis(player.pad, 1);
+        }
+        const bool bossTimeFrozen = boss.active && boss.shape == BossTouchpad && boss.phase == 3 && boss.freezeActive;
+        const bool memoryLocked = boss.active && boss.shape == BossDpad && boss.phase == 3 && boss.memoryState < 4 && boss.memoryPlayer == i;
+        if (bossTimeFrozen || memoryLocked) { moveX = 0.0f; moveY = 0.0f; }
         const float magnitude = std::sqrt(moveX * moveX + moveY * moveY);
         if (magnitude <= 0.18f) { moveX = 0.0f; moveY = 0.0f; }
         player.x += moveX * 300.0f * player.sensitivity * dt;
@@ -2116,15 +2913,10 @@ void Game::Impl::updatePlaying(float dt)
         player.cameraX += (player.x - player.cameraX) * std::min(1.0f, dt * 5.0f);
         player.cameraY += (player.y - player.cameraY) * std::min(1.0f, dt * 5.0f);
 
-        if (player.fireTimer <= 0.0f && (!enemies.empty() || boss.active)) shoot(player, i);
-        if (pressed(player.pad, player.keys[ActionSkill]) && player.skillCooldown <= 0.0f && player.timeStop <= 0.0f)
-        {
-            player.timeStop = player.skillDuration;
-            player.skillCooldown = player.skillCooldownMax;
-            addParticles(player.x, player.y, player.color, 44, 390.0f, 1.0f);
-            addFloatingText(player.x, player.y - 30.0f, "TEMPO PARADO!", player.color);
-            rumble(player.pad, 0.6f, 500);
-        }
+        const bool shotsBlocked = bossTimeFrozen ||
+            (boss.active && boss.shape == BossTouchpad && boss.phase == 2 && boss.shootSuppressed) ||
+            (boss.active && boss.shape == BossDpad && boss.phase == 3 && boss.memoryState < 4);
+        if (!shotsBlocked && player.fireTimer <= 0.0f && (!enemies.empty() || boss.active)) shoot(player, i);
         if (pressed(player.pad, player.keys[ActionUpgradeFire])) buyUpgrade(player, 1);
         if (pressed(player.pad, player.keys[ActionUpgradeDamage])) buyUpgrade(player, 2);
         if (pressed(player.pad, player.keys[ActionUpgradeSkill])) buyUpgrade(player, 3);
@@ -2196,6 +2988,8 @@ void Game::Impl::renderBackdrop()
         const int margin = band * 90;
         draw::fillRect(renderer, margin, margin / 2, SCREEN_W - margin * 2, SCREEN_H - margin, {4, static_cast<Uint8>(8 + band), static_cast<Uint8>(20 + band * 3), 30});
     }
+    for (int x = 0; x < SCREEN_W; x += 80) draw::line(renderer, x, 0, x, SCREEN_H, {0, 120, 210, 9});
+    for (int y = 0; y < SCREEN_H; y += 80) draw::line(renderer, 0, y, SCREEN_W, y, {0, 120, 210, 9});
     const int stars = qualityStars();
     for (int i = 0; i < stars; ++i)
     {
@@ -2205,6 +2999,28 @@ void Game::Impl::renderBackdrop()
         const Color star = i % 7 == 0 ? withAlpha(PURPLE, alpha) : (i % 5 == 0 ? withAlpha(GOLD, alpha) : withAlpha(CYAN, alpha));
         draw::fillRect(renderer, x, y, i % 9 == 0 ? 3 : 2, i % 9 == 0 ? 3 : 2, star);
     }
+    if (menuTravelEffect > 0.0f)
+    {
+        const float strength = clampf(menuTravelEffect / 0.55f, 0.0f, 1.0f);
+        for (int i = 0; i < 54; ++i)
+        {
+            const int x = (i * 137 + 31) % SCREEN_W;
+            const int y = (i * 211 + 53) % SCREEN_H;
+            const float dx = x - SCREEN_W * 0.5f;
+            const float dy = y - SCREEN_H * 0.5f;
+            const float length = (35.0f + (i % 8) * 16.0f) * strength;
+            const float magnitude = std::sqrt(dx * dx + dy * dy) + 1.0f;
+            draw::line(renderer, x, y, x + static_cast<int>(dx / magnitude * length), y + static_cast<int>(dy / magnitude * length),
+                       i % 5 == 0 ? withAlpha(PURPLE, static_cast<int>(150 * strength)) : withAlpha(CYAN, static_cast<int>(130 * strength)), i % 7 == 0 ? 3 : 2);
+        }
+        draw::ellipse(renderer, SCREEN_W / 2, SCREEN_H / 2, static_cast<int>(520 + strength * 260), static_cast<int>(270 + strength * 150), withAlpha(CYAN, static_cast<int>(75 * strength)), 3);
+    }
+    for (int y = 1; y < SCREEN_H; y += 5) draw::fillRect(renderer, 0, y, SCREEN_W, 1, {80, 150, 220, 4});
+    const int corner = 46;
+    draw::line(renderer, 24, 24, 24 + corner, 24, withAlpha(CYAN, 85), 2);
+    draw::line(renderer, 24, 24, 24, 24 + corner, withAlpha(CYAN, 85), 2);
+    draw::line(renderer, SCREEN_W - 24, 24, SCREEN_W - 24 - corner, 24, withAlpha(CYAN, 85), 2);
+    draw::line(renderer, SCREEN_W - 24, 24, SCREEN_W - 24, 24 + corner, withAlpha(CYAN, 85), 2);
 }
 
 void Game::Impl::renderMenuOptions(const std::vector<std::string>& options, int startY, int scale)
@@ -2219,7 +3035,11 @@ void Game::Impl::renderMenuOptions(const std::vector<std::string>& options, int 
         if (selected)
         {
             draw::fillRect(renderer, x, y, width, height, {0, 100, 200, 55});
+            const int shimmer = x + static_cast<int>(std::fmod(lastTick / 1000.0f, 1.25f) / 1.25f * (width + 180)) - 90;
+            draw::fillRect(renderer, shimmer, y + 2, 58, height - 4, {0, 212, 255, 28});
+            draw::fillRect(renderer, shimmer + 58, y + 2, 26, height - 4, {187, 68, 255, 18});
             draw::outlineRect(renderer, x, y, width, height, CYAN, 2);
+            draw::outlineRect(renderer, x - 6, y - 6, width + 12, height + 12, withAlpha(CYAN, 30 + static_cast<int>((std::sin(lastTick / 180.0f) + 1.0f) * 18.0f)), 2);
             draw::triangle(renderer, x + 18, y + height / 2, x + 36, y + 16, x + 36, y + height - 16, CYAN);
         }
         else draw::outlineRect(renderer, x, y, width, height, {80, 115, 155, 90}, 1);
@@ -2419,7 +3239,21 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
     const int x = static_cast<int>(point.x);
     const int y = static_cast<int>(point.y);
     const int radius = static_cast<int>(enemy.radius);
-    if (enemy.edges == 3)
+    if (enemy.kind == 1)
+    {
+        const float c = std::cos(enemy.angle);
+        const float s = std::sin(enemy.angle);
+        const int ax = static_cast<int>(c * radius);
+        const int ay = static_cast<int>(s * radius);
+        const int bx = static_cast<int>(-s * radius);
+        const int by = static_cast<int>(c * radius);
+        draw::line(renderer, x - ax - bx, y - ay - by, x + ax + bx, y + ay + by, withAlpha(enemy.color, 70), 10);
+        draw::line(renderer, x - ax + bx, y - ay + by, x + ax - bx, y + ay - by, withAlpha(enemy.color, 70), 10);
+        draw::line(renderer, x - ax - bx, y - ay - by, x + ax + bx, y + ay + by, enemy.color, 4);
+        draw::line(renderer, x - ax + bx, y - ay + by, x + ax - bx, y + ay - by, enemy.color, 4);
+        draw::fillCircle(renderer, x, y, 4, WHITE);
+    }
+    else if (enemy.edges == 3)
     {
         int px[3], py[3];
         for (int i = 0; i < 3; ++i)
@@ -2457,24 +3291,147 @@ void Game::Impl::renderBoss(const Viewport& viewport, const Player& cameraPlayer
 {
     if (!boss.active) return;
     const Vec2 point = toScreen(viewport, cameraPlayer, boss.x, boss.y);
-    if (point.x < viewport.x - 180 || point.x > viewport.x + viewport.w + 180 || point.y < viewport.y - 180 || point.y > viewport.y + viewport.h + 180) return;
     const int x = static_cast<int>(point.x);
     const int y = static_cast<int>(point.y);
     const int radius = static_cast<int>(boss.radius);
     const Color body = boss.color;
-    if (boss.phase == 1 || boss.shape == 2) draw::glowCircle(renderer, x, y, radius, body, 20);
-    else if (boss.shape == 0) draw::triangle(renderer, x, y - radius, x - radius, y + radius, x + radius, y + radius, body);
-    else if (boss.shape == 1)
+
+    if (boss.phase == 3 && boss.shape == BossX && boss.laserActive)
     {
-        draw::fillRect(renderer, x - radius, y - radius, radius * 2, radius * 2, withAlpha(body, 65));
-        draw::outlineRect(renderer, x - radius, y - radius, radius * 2, radius * 2, body, 5);
+        const Vec2 laserEnd = toScreen(viewport, cameraPlayer, boss.x + std::cos(boss.angle) * 2800.0f, boss.y + std::sin(boss.angle) * 2800.0f);
+        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 20, 60, 34}, 46);
+        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 35, 85, 115}, 24);
+        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), WHITE, 6);
+    }
+
+    if (boss.shape == BossSquare && boss.phase == 2)
+    {
+        draw::glowCircle(renderer, x, y, 18, withAlpha(PURPLE, 70), 18);
+        for (int i = 0; i < 4; ++i)
+        {
+            const BossPart& part = boss.parts[i];
+            const Vec2 partPoint = toScreen(viewport, cameraPlayer, part.x, part.y);
+            const int px = static_cast<int>(partPoint.x);
+            const int py = static_cast<int>(partPoint.y);
+            const Color partColor = part.collected ? CYAN : (part.collectible ? GOLD : PURPLE);
+            const bool horizontal = i == 0 || i == 2;
+            draw::line(renderer, px - (horizontal ? 42 : 0), py - (horizontal ? 0 : 42),
+                       px + (horizontal ? 42 : 0), py + (horizontal ? 0 : 42), withAlpha(partColor, 50), 18);
+            draw::line(renderer, px - (horizontal ? 42 : 0), py - (horizontal ? 0 : 42),
+                       px + (horizontal ? 42 : 0), py + (horizontal ? 0 : 42), partColor, 7);
+            if (part.active)
+            {
+                draw::fillRect(renderer, px - 36, py - 54, 72, 6, {0, 0, 0, 220});
+                draw::fillRect(renderer, px - 36, py - 54, static_cast<int>(72.0f * std::max(0.0f, part.hp / part.maxHp)), 6, PURPLE);
+            }
+            else if (part.collectible) draw::ellipse(renderer, px, py, 58, 28, withAlpha(GOLD, 180), 3);
+        }
+        return;
+    }
+
+    if (point.x < viewport.x - 220 || point.x > viewport.x + viewport.w + 220 || point.y < viewport.y - 220 || point.y > viewport.y + viewport.h + 220) return;
+
+    if (boss.phase == 1)
+        draw::glowCircle(renderer, x, y, radius, body, 24);
+    else if (boss.shape == BossX)
+    {
+        const float c = std::cos(boss.angle);
+        const float s = std::sin(boss.angle);
+        const int ax = static_cast<int>(c * radius * 0.72f);
+        const int ay = static_cast<int>(s * radius * 0.72f);
+        const int bx = static_cast<int>(-s * radius * 0.72f);
+        const int by = static_cast<int>(c * radius * 0.72f);
+        draw::line(renderer, x - ax - bx, y - ay - by, x + ax + bx, y + ay + by, withAlpha(body, 45), 28);
+        draw::line(renderer, x - ax + bx, y - ay + by, x + ax - bx, y + ay - by, withAlpha(body, 45), 28);
+        draw::line(renderer, x - ax - bx, y - ay - by, x + ax + bx, y + ay + by, body, 12);
+        draw::line(renderer, x - ax + bx, y - ay + by, x + ax - bx, y + ay - by, body, 12);
+    }
+    else if (boss.shape == BossSquare)
+    {
+        draw::fillRect(renderer, x - radius, y - radius, radius * 2, radius * 2, withAlpha(body, 80));
+        draw::outlineRect(renderer, x - radius, y - radius, radius * 2, radius * 2, withAlpha(body, 45), 18);
+        draw::outlineRect(renderer, x - radius, y - radius, radius * 2, radius * 2, body, 6);
+        draw::outlineRect(renderer, x - radius + 12, y - radius + 12, radius * 2 - 24, radius * 2 - 24, withAlpha(WHITE, 55), 2);
+    }
+    else if (boss.shape == BossTriangle)
+    {
+        int px[3], py[3];
+        for (int i = 0; i < 3; ++i)
+        {
+            const float angle = boss.angle + i * PI * 2.0f / 3.0f - PI * 0.5f;
+            px[i] = x + static_cast<int>(std::cos(angle) * radius);
+            py[i] = y + static_cast<int>(std::sin(angle) * radius);
+        }
+        draw::triangle(renderer, px[0], py[0], px[1], py[1], px[2], py[2], body);
+        for (int i = 0; i < 3; ++i) draw::line(renderer, px[i], py[i], px[(i + 1) % 3], py[(i + 1) % 3], withAlpha(WHITE, 90), 3);
+    }
+    else if (boss.shape == BossCircle)
+    {
+        Color circleColor = body;
+        if (boss.phase == 3 && boss.state == 0)
+        {
+            const float pulse = (std::sin(lastTick / 45.0f) + 1.0f) * 0.5f;
+            circleColor = pulse > 0.45f ? WHITE : RED;
+            draw::glowCircle(renderer, x, y, radius + static_cast<int>(pulse * 18.0f), withAlpha(RED, 120), 35);
+        }
+        draw::glowCircle(renderer, x, y, radius, circleColor, 28);
+        draw::circle(renderer, x, y, radius - 13, withAlpha(WHITE, 80));
+    }
+    else if (boss.shape == BossDpad)
+    {
+        const auto directionColor = [&](int direction) -> Color
+        {
+            if ((boss.memoryRemovedMask & (1u << direction)) != 0) return {35, 40, 55, 100};
+            if (boss.phase == 2 && boss.telegraphDirection == direction) return RED;
+            if (boss.phase == 3 && boss.memoryFlashTimer > 0.0f)
+            {
+                if (boss.memoryFlashDirection == -2) return GOLD;
+                if (boss.memoryFlashDirection == direction)
+                    return boss.memoryState == 2 ? CYAN : RED;
+            }
+            return body;
+        };
+        draw::fillCircle(renderer, x, y, 24, withAlpha(body, 170));
+        for (int direction = 0; direction < 4; ++direction)
+        {
+            const Color directionBody = directionColor(direction);
+            if (direction == 0)
+            {
+                draw::fillRect(renderer, x - 17, y - radius + 24, 34, radius - 35, directionBody);
+                draw::triangle(renderer, x, y - radius - 8, x - 34, y - radius + 30, x + 34, y - radius + 30, directionBody);
+            }
+            else if (direction == 1)
+            {
+                draw::fillRect(renderer, x + 12, y - 17, radius - 24, 34, directionBody);
+                draw::triangle(renderer, x + radius + 8, y, x + radius - 30, y - 34, x + radius - 30, y + 34, directionBody);
+            }
+            else if (direction == 2)
+            {
+                draw::fillRect(renderer, x - 17, y + 12, 34, radius - 24, directionBody);
+                draw::triangle(renderer, x, y + radius + 8, x - 34, y + radius - 30, x + 34, y + radius - 30, directionBody);
+            }
+            else
+            {
+                draw::fillRect(renderer, x - radius + 24, y - 17, radius - 35, 34, directionBody);
+                draw::triangle(renderer, x - radius - 8, y, x - radius + 30, y - 34, x - radius + 30, y + 34, directionBody);
+            }
+        }
     }
     else
     {
-        draw::fillRect(renderer, x - radius / 3, y - radius, radius * 2 / 3, radius * 2, body);
-        draw::fillRect(renderer, x - radius, y - radius / 3, radius * 2, radius * 2 / 3, body);
+        const int width = radius * 3;
+        const int height = radius * 2;
+        draw::panel(renderer, x - width / 2, y - height / 2, width, height, body, {5, 12, 25, 230});
+        draw::outlineRect(renderer, x - width / 2 + 13, y - height / 2 + 13, width - 26, height - 26, withAlpha(WHITE, 55), 2);
+        const int scan = x - width / 2 + 16 + static_cast<int>(std::fmod(lastTick / 1000.0f, 1.0f) * (width - 32));
+        draw::line(renderer, scan, y - height / 2 + 16, scan, y + height / 2 - 16, withAlpha(CYAN, 90), 3);
+        draw::fillCircle(renderer, x - 32, y, 9, withAlpha(CYAN, 170));
+        draw::fillCircle(renderer, x + 32, y, 9, withAlpha(PURPLE, 170));
+        if (boss.shootSuppressed || boss.freezeActive)
+            draw::ellipse(renderer, x, y, width / 2 + 24, height / 2 + 24, boss.freezeActive ? GOLD : RED, 5);
     }
-    draw::fillCircle(renderer, x - 12, y - 15, 13, {255, 255, 255, 40});
+
+    draw::fillCircle(renderer, x - 12, y - 15, 13, {255, 255, 255, 38});
     if (boss.phase == 1)
     {
         for (int i = 0; i < 3; ++i)
@@ -2813,7 +3770,48 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         renderWorldEntityCircle(viewport, cameraPlayer, projectiles[i].x, projectiles[i].y, projectiles[i].radius, projectiles[i].color, 8);
     }
     for (unsigned i = 0; i < enemyProjectiles.size(); ++i)
-        renderWorldEntityCircle(viewport, cameraPlayer, enemyProjectiles[i].x, enemyProjectiles[i].y, enemyProjectiles[i].radius, enemyProjectiles[i].color, 8);
+    {
+        const Projectile& projectile = enemyProjectiles[i];
+        const Vec2 projectilePoint = toScreen(viewport, cameraPlayer, projectile.x, projectile.y);
+        const int px = static_cast<int>(projectilePoint.x);
+        const int py = static_cast<int>(projectilePoint.y);
+        const int pr = static_cast<int>(projectile.radius);
+        if (px < viewport.x - pr - 30 || px > viewport.x + viewport.w + pr + 30 || py < viewport.y - pr - 30 || py > viewport.y + viewport.h + pr + 30) continue;
+        if (projectile.kind == ProjectileX)
+        {
+            const int dx = static_cast<int>(std::cos(projectile.angle) * pr);
+            const int dy = static_cast<int>(std::sin(projectile.angle) * pr);
+            draw::line(renderer, px - dx - dy, py - dy + dx, px + dx + dy, py + dy - dx, withAlpha(projectile.color, 65), 8);
+            draw::line(renderer, px - dx + dy, py - dy - dx, px + dx - dy, py + dy + dx, projectile.color, 4);
+        }
+        else if (projectile.kind == ProjectileSquare)
+        {
+            int sx[4], sy[4];
+            for (int corner = 0; corner < 4; ++corner)
+            {
+                const float angle = projectile.angle + PI * 0.25f + corner * PI * 0.5f;
+                sx[corner] = px + static_cast<int>(std::cos(angle) * pr * 1.35f);
+                sy[corner] = py + static_cast<int>(std::sin(angle) * pr * 1.35f);
+            }
+            draw::triangle(renderer, sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], withAlpha(projectile.color, 190));
+            draw::triangle(renderer, sx[0], sy[0], sx[2], sy[2], sx[3], sy[3], withAlpha(projectile.color, 190));
+            for (int corner = 0; corner < 4; ++corner) draw::line(renderer, sx[corner], sy[corner], sx[(corner + 1) % 4], sy[(corner + 1) % 4], WHITE, 2);
+        }
+        else if (projectile.kind == ProjectileTriangle || projectile.kind == ProjectileArrow)
+        {
+            const float angle = projectile.angle;
+            const int tipX = px + static_cast<int>(std::cos(angle) * pr * 1.8f);
+            const int tipY = py + static_cast<int>(std::sin(angle) * pr * 1.8f);
+            const int leftX = px + static_cast<int>(std::cos(angle + 2.45f) * pr);
+            const int leftY = py + static_cast<int>(std::sin(angle + 2.45f) * pr);
+            const int rightX = px + static_cast<int>(std::cos(angle - 2.45f) * pr);
+            const int rightY = py + static_cast<int>(std::sin(angle - 2.45f) * pr);
+            draw::triangle(renderer, tipX, tipY, leftX, leftY, rightX, rightY, projectile.color);
+            if (projectile.kind == ProjectileArrow)
+                draw::line(renderer, px - static_cast<int>(std::cos(angle) * pr * 1.8f), py - static_cast<int>(std::sin(angle) * pr * 1.8f), px, py, projectile.color, 5);
+        }
+        else renderWorldEntityCircle(viewport, cameraPlayer, projectile.x, projectile.y, projectile.radius, projectile.color, projectile.kind == ProjectileDebris ? 14 : 8);
+    }
     for (unsigned i = 0; i < enemies.size(); ++i) renderEnemy(viewport, cameraPlayer, enemies[i]);
     renderBoss(viewport, cameraPlayer);
     for (int i = 0; i < playerCount; ++i) renderPlayer(viewport, cameraPlayer, players[i], i);
@@ -2863,6 +3861,7 @@ void Game::Impl::renderPlaying()
 
     if (boss.active)
     {
+        const char* bossNames[BossCount] = {"NEXO X", "QUADRADO FRAGMENTADO", "TRIANGULO", "CIRCULO CINETICO", "DIRECIONAL", "TOUCHPAD TEMPORAL"};
         float ratio = 0.0f;
         if (boss.phase == 1)
         {
@@ -2875,17 +3874,43 @@ void Game::Impl::renderPlaying()
             }
             ratio = maxHp > 0.0f ? hp / maxHp : 0.0f;
         }
+        else if (boss.phase == 2 && boss.shape == BossSquare)
+        {
+            float hp = 0.0f;
+            float maxHp = 0.0f;
+            for (int i = 0; i < 4; ++i) { hp += boss.parts[i].hp; maxHp += boss.parts[i].maxHp; }
+            ratio = maxHp > 0.0f ? hp / maxHp : 0.0f;
+        }
         else if (boss.phase == 2) ratio = boss.hp / boss.maxHp;
+        else if (boss.shape == BossDpad && boss.memoryState < 4) ratio = 1.0f - (boss.memoryRound - 1) / 4.0f;
         else ratio = boss.rageHp / boss.maxRageHp;
         draw::fillRect(renderer, 600, 70, 720, 42, {0, 0, 0, 205});
         draw::outlineRect(renderer, 600, 70, 720, 42, RED, 2);
         draw::fillRect(renderer, 610, 82, static_cast<int>(700 * clampf(ratio, 0.0f, 1.0f)), 18, boss.phase == 3 ? RED : boss.trueColor);
-        draw::text(renderer, "BOSS FASE " + number(boss.phase), SCREEN_W / 2, 119, 2, RED, true);
+        draw::text(renderer, std::string(bossNames[boss.shape]) + "  -  FASE " + number(boss.phase), SCREEN_W / 2, 119, 2, RED, true);
+
+        if (boss.shape == BossDpad && boss.phase == 3 && boss.memoryState < 4)
+        {
+            draw::panel(renderer, 575, 150, 770, 72, boss.memoryState == 3 ? GOLD : CYAN, {0, 4, 18, 225});
+            const std::string memoryStatus = "MEMORIA " + number(boss.memoryRound) + "/4   CHANCES " + number(boss.memoryLives) + "/3   TEMPO " + number(static_cast<int>(std::ceil(boss.memoryTimer))) + "S";
+            draw::text(renderer, memoryStatus, SCREEN_W / 2, 171, 2, boss.memoryState == 3 ? GOLD : WHITE, true);
+            draw::text(renderer, boss.memoryState == 1 ? "OBSERVE AS 8 DIRECOES" : (boss.memoryState == 2 ? "REPITA NO D-PAD" : (boss.memoryState == 3 ? "ESCOLHA UMA DIRECAO PARA ARRANCAR" : "SINCRONIZANDO...")), SCREEN_W / 2, 198, 1, MUTED, true);
+        }
+        if (boss.shape == BossTouchpad)
+        {
+            draw::panel(renderer, 650, 150, 620, 54, GOLD, {0, 4, 18, 215});
+            std::string touchStatus = "TOUCHPAD: TOQUE E ARRASTE PARA MOVER";
+            if (boss.shootSuppressed) touchStatus = "TIROS BLOQUEADOS: " + number(static_cast<int>(std::ceil(boss.stateTimer))) + "S";
+            else if (boss.freezeActive) touchStatus = "TEMPO BLOQUEADO: USE SUA HABILIDADE";
+            draw::text(renderer, touchStatus, SCREEN_W / 2, 169, 2, boss.freezeActive ? RED : GOLD, true);
+        }
+        if (boss.shape == BossCircle && boss.phase == 3 && boss.state == 0)
+            draw::text(renderer, "IMPACTO IMINENTE - PARE O TEMPO!", SCREEN_W / 2, 162, 3, RED, true);
     }
 
     if (announcementTimer > 0.0f)
     {
-        const bool bossWave = wave % 5 == 0;
+        const bool bossWave = isBossWaveNumber(wave);
         const std::string title = bossWave ? "BOSS APROXIMANDO" : "ONDA " + number(wave);
         draw::fillRect(renderer, 0, SCREEN_H / 2 - 90, SCREEN_W, 180, {0, 0, 10, 150});
         draw::text(renderer, title, SCREEN_W / 2, SCREEN_H / 2 - 32, 7, bossWave ? RED : CYAN, true);

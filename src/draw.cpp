@@ -424,9 +424,15 @@ void triangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, in
 
 void panel(SDL_Renderer* renderer, int x, int y, int w, int h, Color border, Color background)
 {
+    for (int glow = 18; glow >= 6; glow -= 4)
+        outlineRect(renderer, x - glow, y - glow, w + glow * 2, h + glow * 2,
+                    {border.r, border.g, border.b, static_cast<Uint8>(std::max(3, 22 - glow))}, 3);
     fillRect(renderer, x, y, w, h, background);
-    outlineRect(renderer, x, y, w, h, {border.r, border.g, border.b, 42}, 10);
+    fillRect(renderer, x + 2, y + 2, w - 4, std::max(1, h / 5), {border.r, border.g, border.b, 12});
+    outlineRect(renderer, x + 5, y + 5, w - 10, h - 10, {255, 255, 255, 13}, 1);
+    outlineRect(renderer, x, y, w, h, {border.r, border.g, border.b, 38}, 9);
     outlineRect(renderer, x, y, w, h, border, 2);
+    fillRect(renderer, x + 3, y + 3, w - 6, 1, {255, 255, 255, 42});
 }
 
 int textWidth(const std::string& value, int scale)
@@ -439,18 +445,26 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
 {
     if (scale <= 0) return;
     if (centered) x -= textWidth(value, scale) / 2;
-    for (unsigned index = 0; index < value.size(); ++index)
+    const int glyphSize = scale == 1 ? 2 : scale;
+    const int baseX = x;
+    const auto paint = [&](int offsetX, int offsetY, Color paintColor)
     {
-        const Uint8* rows = glyph(value[index]);
-        if (rows)
+        int penX = baseX + offsetX;
+        for (unsigned index = 0; index < value.size(); ++index)
         {
-            for (int row = 0; row < 7; ++row)
-                for (int column = 0; column < 5; ++column)
-                    if ((rows[row] & (1 << (4 - column))) != 0)
-                        fillRect(renderer, x + column * scale, y + row * scale, scale, scale, valueColor);
+            const Uint8* rows = glyph(value[index]);
+            if (rows)
+            {
+                for (int row = 0; row < 7; ++row)
+                    for (int column = 0; column < 5; ++column)
+                        if ((rows[row] & (1 << (4 - column))) != 0)
+                            fillRect(renderer, penX + column * scale, y + offsetY + row * scale, glyphSize, glyphSize, paintColor);
+            }
+            penX += 6 * scale;
         }
-        x += 6 * scale;
-    }
+    };
+    paint(std::max(1, scale / 2), std::max(1, scale / 2), {0, 0, 0, static_cast<Uint8>(std::min(190, static_cast<int>(valueColor.a)))});
+    paint(0, 0, valueColor);
 }
 }
 }
