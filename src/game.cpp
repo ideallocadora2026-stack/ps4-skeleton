@@ -1603,6 +1603,9 @@ void Game::Impl::addEnemyProjectile(float x, float y, float angle, float speed, 
 void Game::Impl::spawnBossDrone()
 {
     if (boss.droneCount >= 50) return;
+    int activeDrones = 0;
+    for (unsigned i = 0; i < enemies.size(); ++i) if (enemies[i].kind == 1) ++activeDrones;
+    if (activeDrones >= 50) { boss.droneCount = 50; return; }
     Enemy drone;
     const float angle = random01() * PI * 2.0f;
     drone.x = boss.x + std::cos(angle) * (boss.radius + 35.0f);
@@ -3782,6 +3785,8 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
             const int dx = static_cast<int>(std::cos(projectile.angle) * pr);
             const int dy = static_cast<int>(std::sin(projectile.angle) * pr);
             draw::line(renderer, px - dx - dy, py - dy + dx, px + dx + dy, py + dy - dx, withAlpha(projectile.color, 65), 8);
+            draw::line(renderer, px - dx + dy, py - dy - dx, px + dx - dy, py + dy + dx, withAlpha(projectile.color, 65), 8);
+            draw::line(renderer, px - dx - dy, py - dy + dx, px + dx + dy, py + dy - dx, projectile.color, 4);
             draw::line(renderer, px - dx + dy, py - dy - dx, px + dx - dy, py + dy + dx, projectile.color, 4);
         }
         else if (projectile.kind == ProjectileSquare)
@@ -3962,3 +3967,4 @@ bool Game::running() const
     return impl_->active;
 }
 }
+
