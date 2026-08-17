@@ -27,6 +27,7 @@ void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value);
 void outlineRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value, int thickness = 1);
 void line(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, Color value, int thickness = 1);
 void circle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value);
+void ellipse(SDL_Renderer* renderer, int cx, int cy, int radiusX, int radiusY, Color value, int thickness = 1);
 void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value);
 void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value, int glow);
 void triangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, int y3, Color value);

@@ -154,6 +154,25 @@ void blendSpan(int y, int x1, int x2, Color value)
                              (static_cast<uint32_t>(green) << 8) | static_cast<uint32_t>(blue);
     }
 }
+
+void blendRing(int cx, int cy, int innerRadius, int outerRadius, Color value)
+{
+    if (outerRadius <= innerRadius || outerRadius <= 0 || value.a == 0) return;
+    const int outerSquared = outerRadius * outerRadius;
+    const int innerSquared = innerRadius * innerRadius;
+    for (int y = -outerRadius; y <= outerRadius; ++y)
+    {
+        const int outerSpan = static_cast<int>(std::sqrt(static_cast<float>(std::max(0, outerSquared - y * y))));
+        if (std::abs(y) >= innerRadius)
+        {
+            blendSpan(cy + y, cx - outerSpan, cx + outerSpan + 1, value);
+            continue;
+        }
+        const int innerSpan = static_cast<int>(std::sqrt(static_cast<float>(std::max(0, innerSquared - y * y))));
+        blendSpan(cy + y, cx - outerSpan, cx - innerSpan, value);
+        blendSpan(cy + y, cx + innerSpan + 1, cx + outerSpan + 1, value);
+    }
+}
 }
 
 namespace draw
@@ -313,6 +332,23 @@ void circle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
     }
 }
 
+void ellipse(SDL_Renderer* renderer, int cx, int cy, int radiusX, int radiusY, Color value, int thickness)
+{
+    if (radiusX <= 0 || radiusY <= 0) return;
+    const int segments = std::max(24, std::min(96, (radiusX + radiusY) / 2));
+    int previousX = cx + radiusX;
+    int previousY = cy;
+    for (int i = 1; i <= segments; ++i)
+    {
+        const float angle = static_cast<float>(i) * 6.28318530718f / segments;
+        const int nextX = cx + static_cast<int>(std::cos(angle) * radiusX);
+        const int nextY = cy + static_cast<int>(std::sin(angle) * radiusY);
+        line(renderer, previousX, previousY, nextX, nextY, value, thickness);
+        previousX = nextX;
+        previousY = nextY;
+    }
+}
+
 void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
     (void)renderer;
@@ -326,11 +362,13 @@ void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 
 void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value, int glow)
 {
-    for (int i = glow; i > 0; i -= 3)
+    const int step = 3;
+    for (int inner = radius; inner < radius + glow; inner += step)
     {
         Color haze = value;
-        haze.a = static_cast<Uint8>(std::max(4, static_cast<int>(value.a) * (glow - i + 2) / (glow * 10 + 1)));
-        fillCircle(renderer, cx, cy, radius + i, haze);
+        const int distance = inner - radius;
+        haze.a = static_cast<Uint8>(std::max(3, static_cast<int>(value.a) * (glow - distance) / std::max(1, glow * 7)));
+        blendRing(cx, cy, inner, std::min(radius + glow, inner + step), haze);
     }
     fillCircle(renderer, cx, cy, radius, value);
 }
