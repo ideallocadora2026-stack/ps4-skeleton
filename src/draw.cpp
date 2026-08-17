@@ -89,13 +89,22 @@ int clipTop = 0;
 int clipRight = 0;
 int clipBottom = 0;
 bool surfaceLocked = false;
+uint32_t redMask = 0;
+uint32_t greenMask = 0;
+uint32_t blueMask = 0;
+uint32_t alphaMask = 0;
+Uint8 redShift = 0;
+Uint8 greenShift = 0;
+Uint8 blueShift = 0;
+Uint8 alphaShift = 0;
 
 uint32_t packed(Color value)
 {
-    return (static_cast<uint32_t>(value.a) << 24) |
-           (static_cast<uint32_t>(value.r) << 16) |
-           (static_cast<uint32_t>(value.g) << 8) |
-           static_cast<uint32_t>(value.b);
+    uint32_t result = ((static_cast<uint32_t>(value.r) << redShift) & redMask) |
+                      ((static_cast<uint32_t>(value.g) << greenShift) & greenMask) |
+                      ((static_cast<uint32_t>(value.b) << blueShift) & blueMask);
+    if (alphaMask) result |= (static_cast<uint32_t>(value.a) << alphaShift) & alphaMask;
+    return result;
 }
 
 int blendedChannel(int source, int destination, int alpha)
@@ -121,7 +130,10 @@ void blendSpan(int y, int x1, int x2, Color value)
     const int alpha = value.a;
     const int inverse = 255 - alpha;
     const __m128i zero = _mm_setzero_si128();
-    const __m128i source = _mm_set_epi16(255, value.r, value.g, value.b, 255, value.r, value.g, value.b);
+    Color opaque = value;
+    opaque.a = 255;
+    const __m128i sourceBytes = _mm_set1_epi32(static_cast<int>(packed(opaque)));
+    const __m128i source = _mm_unpacklo_epi8(sourceBytes, zero);
     const __m128i sourceAlpha = _mm_set1_epi16(static_cast<short>(alpha));
     const __m128i destinationAlpha = _mm_set1_epi16(static_cast<short>(inverse));
     const __m128i rounding = _mm_set1_epi16(128);
@@ -147,11 +159,10 @@ void blendSpan(int y, int x1, int x2, Color value)
     for (; index < count; ++index)
     {
         const uint32_t old = destination[index];
-        const int red = blendedChannel(value.r, (old >> 16) & 0xff, alpha);
-        const int green = blendedChannel(value.g, (old >> 8) & 0xff, alpha);
-        const int blue = blendedChannel(value.b, old & 0xff, alpha);
-        destination[index] = 0xff000000u | (static_cast<uint32_t>(red) << 16) |
-                             (static_cast<uint32_t>(green) << 8) | static_cast<uint32_t>(blue);
+        const int red = blendedChannel(value.r, (old & redMask) >> redShift, alpha);
+        const int green = blendedChannel(value.g, (old & greenMask) >> greenShift, alpha);
+        const int blue = blendedChannel(value.b, (old & blueMask) >> blueShift, alpha);
+        destination[index] = packed({static_cast<Uint8>(red), static_cast<Uint8>(green), static_cast<Uint8>(blue), 255});
     }
 }
 
@@ -179,12 +190,20 @@ namespace draw
 {
 bool initialize(SDL_Surface* surface)
 {
-    if (!surface || !surface->pixels || !surface->format || surface->format->BytesPerPixel != 4) return false;
+    if (!surface || !surface->pixels || !surface->format || surface->format->BytesPerPixel != 4 || !surface->format->Rmask || !surface->format->Gmask || !surface->format->Bmask) return false;
     targetSurface = surface;
     pixels = static_cast<uint32_t*>(surface->pixels);
     pitchPixels = surface->pitch / 4;
     surfaceWidth = surface->w;
     surfaceHeight = surface->h;
+    redMask = surface->format->Rmask;
+    greenMask = surface->format->Gmask;
+    blueMask = surface->format->Bmask;
+    alphaMask = surface->format->Amask;
+    redShift = surface->format->Rshift;
+    greenShift = surface->format->Gshift;
+    blueShift = surface->format->Bshift;
+    alphaShift = surface->format->Ashift;
     clipLeft = 0;
     clipTop = 0;
     clipRight = surfaceWidth;

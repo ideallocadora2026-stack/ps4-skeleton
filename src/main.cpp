@@ -26,7 +26,7 @@ int main(int, char**)
     setvbuf(stdout, nullptr, _IONBF, 0);
     sceSystemServiceHideSplashScreen();
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO) != 0)
         stopOnStartupError(SDL_GetError());
 
     SDL_Window* window = SDL_CreateWindow(
@@ -36,7 +36,7 @@ int main(int, char**)
     SDL_Surface* surface = SDL_GetWindowSurface(window);
     if (!surface) stopOnStartupError(SDL_GetError());
     if (!gw::draw::initialize(surface))
-        stopOnStartupError("framebuffer ARGB8888");
+        stopOnStartupError("framebuffer 32-bit");
 
     gw::Game game(nullptr);
     if (!game.initialize())

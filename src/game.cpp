@@ -49,6 +49,7 @@ enum PadButton
     PAD_TRIANGLE = 3,
     PAD_L1 = 4,
     PAD_R1 = 5,
+    PAD_SHARE = 8,
     PAD_OPTIONS = 9,
     PAD_L3 = 11,
     PAD_R3 = 12,
@@ -171,12 +172,15 @@ struct Viewport
 
 struct Pad
 {
-    SDL_Joystick* handle;
+    int handle;
+    int userId;
+    bool ownsHandle;
+    bool connected;
     bool current[PAD_BUTTON_COUNT];
     bool previous[PAD_BUTTON_COUNT];
     float axes[4];
 
-    Pad() : handle(nullptr)
+    Pad() : handle(-1), userId(-1), ownsHandle(false), connected(false)
     {
         std::memset(current, 0, sizeof(current));
         std::memset(previous, 0, sizeof(previous));
@@ -368,6 +372,7 @@ const char* buttonName(int button)
         case PAD_TRIANGLE: return "TRIANGULO";
         case PAD_L1: return "L1";
         case PAD_R1: return "R1";
+        case PAD_SHARE: return "SHARE";
         case PAD_OPTIONS: return "OPTIONS";
         case PAD_L3: return "L3";
         case PAD_R3: return "R3";
@@ -380,6 +385,36 @@ const char* buttonName(int button)
         case PAD_R2: return "R2";
         default: return "BOTAO";
     }
+}
+
+bool nativeButton(uint32_t buttons, int button)
+{
+    switch (button)
+    {
+        case PAD_CROSS: return (buttons & ORBIS_PAD_BUTTON_CROSS) != 0;
+        case PAD_CIRCLE: return (buttons & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+        case PAD_SQUARE: return (buttons & ORBIS_PAD_BUTTON_SQUARE) != 0;
+        case PAD_TRIANGLE: return (buttons & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
+        case PAD_L1: return (buttons & ORBIS_PAD_BUTTON_L1) != 0;
+        case PAD_R1: return (buttons & ORBIS_PAD_BUTTON_R1) != 0;
+        case PAD_SHARE: return (buttons & 0x0001u) != 0;
+        case PAD_OPTIONS: return (buttons & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+        case PAD_L3: return (buttons & ORBIS_PAD_BUTTON_L3) != 0;
+        case PAD_R3: return (buttons & ORBIS_PAD_BUTTON_R3) != 0;
+        case PAD_UP: return (buttons & ORBIS_PAD_BUTTON_UP) != 0;
+        case PAD_DOWN: return (buttons & ORBIS_PAD_BUTTON_DOWN) != 0;
+        case PAD_LEFT: return (buttons & ORBIS_PAD_BUTTON_LEFT) != 0;
+        case PAD_RIGHT: return (buttons & ORBIS_PAD_BUTTON_RIGHT) != 0;
+        case PAD_TOUCH: return (buttons & ORBIS_PAD_BUTTON_TOUCH_PAD) != 0;
+        case PAD_L2: return (buttons & ORBIS_PAD_BUTTON_L2) != 0;
+        case PAD_R2: return (buttons & ORBIS_PAD_BUTTON_R2) != 0;
+        default: return false;
+    }
+}
+
+float nativeAxis(uint8_t value)
+{
+    return clampf((static_cast<int>(value) - 128) / 127.0f, -1.0f, 1.0f);
 }
 
 uint32_t profileChecksum(const ProfileDisk& profile)
@@ -407,7 +442,7 @@ struct Game::Impl
           totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0),
           enemyColor(RED), graphicsQuality(GraphicsQuality::High), ownedSkins(1u), ownedHats(1u),
           shopTab(ShopTab::Skins), controlIndex(0), bindingAction(-1), noticeTimer(0),
-          resetConfirmTimer(0), profileDirty(false)
+          resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0)
     {
         std::memset(&boss, 0, sizeof(boss));
         std::memset(nativePadHandles, -1, sizeof(nativePadHandles));
@@ -426,9 +461,8 @@ struct Game::Impl
                 OrbisPadVibeParam stop = {0, 0};
                 scePadSetVibration(nativePadHandles[i], &stop);
             }
+            if (pads[i].handle >= 0 && pads[i].ownsHandle) scePadClose(pads[i].handle);
         }
-        for (int i = 0; i < controllerCount; ++i)
-            if (pads[i].handle) SDL_JoystickClose(pads[i].handle);
     }
 
     SDL_Renderer* renderer;
@@ -478,6 +512,8 @@ struct Game::Impl
     std::string noticeText;
     float resetConfirmTimer;
     bool profileDirty;
+    uint32_t disconnectedPlayers;
+    uint32_t controllerRefreshTick;
 
     std::vector<Projectile> projectiles;
     std::vector<Projectile> enemyProjectiles;
@@ -497,6 +533,8 @@ struct Game::Impl
     void updateNativePad(float dt);
     void refreshControllers();
     void sampleInput();
+    int firstConnectedPad() const;
+    void updateDisconnectedPlayers();
     bool down(int pad, int button) const;
     bool pressed(int pad, int button) const;
     float axis(int pad, int index) const;
@@ -707,37 +745,48 @@ int Game::Impl::qualityParticleLimit() const
 bool Game::Impl::initialize()
 {
     loadProfile();
-    SDL_JoystickEventState(SDL_ENABLE);
-    refreshControllers();
-
     sceUserServiceInitialize(nullptr);
     scePadInit();
-    OrbisUserServiceLoginUserIdList users;
-    std::memset(&users, 0xff, sizeof(users));
-    if (sceUserServiceGetLoginUserIdList(&users) >= 0)
+    const uint32_t inputNow = SDL_GetTicks();
+    if (controllerRefreshTick == 0 || inputNow - controllerRefreshTick >= 100)
     {
-        for (int i = 0; i < 4; ++i)
-            if (users.userId[i] >= 0) nativePadHandles[i] = scePadGetHandle(users.userId[i], ORBIS_PAD_PORT_TYPE_STANDARD, 0);
+        refreshControllers();
+        controllerRefreshTick = inputNow;
     }
     return true;
 }
 
 void Game::Impl::refreshControllers()
 {
-    for (int i = 0; i < controllerCount; ++i)
+    OrbisUserServiceLoginUserIdList users;
+    std::memset(&users, 0xff, sizeof(users));
+    if (sceUserServiceGetLoginUserIdList(&users) < 0) return;
+
+    int desiredUsers[4] = {-1, -1, -1, -1};
+    int desiredCount = 0;
+    for (int i = 0; i < 4 && desiredCount < 4; ++i)
+        if (users.userId[i] >= 0) desiredUsers[desiredCount++] = users.userId[i];
+
+    for (int i = 0; i < 4; ++i)
     {
-        if (pads[i].handle) SDL_JoystickClose(pads[i].handle);
-        pads[i] = Pad();
-    }
-    controllerCount = std::min(4, SDL_NumJoysticks());
-    for (int i = 0; i < controllerCount; ++i)
-    {
-        pads[i].handle = SDL_JoystickOpen(i);
-        if (!pads[i].handle)
+        const int desired = desiredUsers[i];
+        if (pads[i].userId != desired)
         {
-            std::printf("Falha ao abrir controle %d: %s\n", i, SDL_GetError());
-            controllerCount = i;
-            break;
+            if (pads[i].handle >= 0 && pads[i].ownsHandle) scePadClose(pads[i].handle);
+            pads[i] = Pad();
+            nativePadHandles[i] = -1;
+            pads[i].userId = desired;
+        }
+        if (desired >= 0 && pads[i].handle < 0)
+        {
+            pads[i].handle = scePadOpen(desired, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
+            pads[i].ownsHandle = pads[i].handle >= 0;
+            if (pads[i].handle < 0)
+            {
+                pads[i].handle = scePadGetHandle(desired, ORBIS_PAD_PORT_TYPE_STANDARD, 0);
+                pads[i].ownsHandle = false;
+            }
+            nativePadHandles[i] = pads[i].handle;
         }
     }
 }
@@ -745,31 +794,85 @@ void Game::Impl::refreshControllers()
 void Game::Impl::sampleInput()
 {
     SDL_Event event;
-    bool controllersChanged = false;
     while (SDL_PollEvent(&event))
-    {
         if (event.type == SDL_QUIT) active = false;
-        else if (event.type == SDL_JOYDEVICEADDED || event.type == SDL_JOYDEVICEREMOVED) controllersChanged = true;
-    }
-    if (controllersChanged && screen != Screen::Playing && screen != Screen::Paused) refreshControllers();
 
-    SDL_JoystickUpdate();
-    for (int p = 0; p < controllerCount; ++p)
+    const uint32_t inputNow = SDL_GetTicks();
+    if (controllerRefreshTick == 0 || inputNow - controllerRefreshTick >= 100)
+    {
+        refreshControllers();
+        controllerRefreshTick = inputNow;
+    }
+    controllerCount = 0;
+    for (int p = 0; p < 4; ++p)
     {
         for (int button = 0; button < PAD_BUTTON_COUNT; ++button)
         {
             pads[p].previous[button] = pads[p].current[button];
-            pads[p].current[button] = SDL_JoystickGetButton(pads[p].handle, button) != 0;
+            pads[p].current[button] = false;
         }
-        const int axisCount = SDL_JoystickNumAxes(pads[p].handle);
-        for (int a = 0; a < 4; ++a)
-            pads[p].axes[a] = a < axisCount ? SDL_JoystickGetAxis(pads[p].handle, a) / 32767.0f : 0.0f;
+        std::memset(pads[p].axes, 0, sizeof(pads[p].axes));
+        pads[p].connected = false;
+        if (pads[p].handle < 0) continue;
+
+        OrbisPadData data;
+        std::memset(&data, 0, sizeof(data));
+        if (scePadReadState(pads[p].handle, &data) < 0 || !data.connected) continue;
+        pads[p].connected = true;
+        ++controllerCount;
+        for (int button = 0; button < PAD_BUTTON_COUNT; ++button) pads[p].current[button] = nativeButton(data.buttons, button);
+        pads[p].axes[0] = nativeAxis(data.leftStick.x);
+        pads[p].axes[1] = nativeAxis(data.leftStick.y);
+        pads[p].axes[2] = nativeAxis(data.rightStick.x);
+        pads[p].axes[3] = nativeAxis(data.rightStick.y);
+    }
+    updateDisconnectedPlayers();
+}
+
+int Game::Impl::firstConnectedPad() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (pads[i].connected) return i;
+    return 0;
+}
+
+void Game::Impl::updateDisconnectedPlayers()
+{
+    const bool activeSession = screen == Screen::Playing || screen == Screen::Paused ||
+        ((screen == Screen::Controls || screen == Screen::Shop) && returnScreen == Screen::Paused);
+    if (!activeSession) return;
+
+    uint32_t missing = 0;
+    for (int i = 0; i < playerCount; ++i)
+        if (players[i].pad < 0 || players[i].pad >= 4 || !pads[players[i].pad].connected) missing |= 1u << i;
+
+    const uint32_t previousMissing = disconnectedPlayers;
+    disconnectedPlayers = missing;
+    if (missing != 0)
+    {
+        if (screen != Screen::Paused)
+        {
+            screen = Screen::Paused;
+            menuIndex = 0;
+        }
+        if (!pads[pausePad].connected) pausePad = firstConnectedPad();
+        if (missing != previousMissing)
+        {
+            int player = 0;
+            while (player < playerCount && (missing & (1u << player)) == 0) ++player;
+            showNotice("CONTROLE " + number(player + 1) + " DESCONECTADO");
+        }
+    }
+    else if (previousMissing != 0)
+    {
+        pausePad = firstConnectedPad();
+        showNotice("CONTROLES RECONECTADOS");
     }
 }
 
 bool Game::Impl::down(int pad, int button) const
 {
-    return pad >= 0 && pad < controllerCount && button >= 0 && button < PAD_BUTTON_COUNT && pads[pad].current[button];
+    return pad >= 0 && pad < 4 && pads[pad].connected && button >= 0 && button < PAD_BUTTON_COUNT && pads[pad].current[button];
 }
 
 bool Game::Impl::pressed(int pad, int button) const
@@ -779,7 +882,7 @@ bool Game::Impl::pressed(int pad, int button) const
 
 float Game::Impl::axis(int pad, int index) const
 {
-    if (pad < 0 || pad >= controllerCount || index < 0 || index >= 4) return 0.0f;
+    if (pad < 0 || pad >= 4 || !pads[pad].connected || index < 0 || index >= 4) return 0.0f;
     return pads[pad].axes[index];
 }
 
@@ -875,7 +978,7 @@ void Game::Impl::tick(uint32_t now)
 
 void Game::Impl::updateMenu(float)
 {
-    const int pad = screen == Screen::Paused ? pausePad : 0;
+    const int pad = screen == Screen::Paused ? pausePad : firstConnectedPad();
     int optionCount = 0;
     if (screen == Screen::Menu) optionCount = 7;
     else if (screen == Screen::Paused) optionCount = 5;
@@ -883,7 +986,7 @@ void Game::Impl::updateMenu(float)
 
     if (pressed(pad, PAD_UP)) menuIndex = (menuIndex + optionCount - 1) % optionCount;
     if (pressed(pad, PAD_DOWN)) menuIndex = (menuIndex + 1) % optionCount;
-    if (screen == Screen::Paused && pressed(pad, PAD_CIRCLE))
+    if (screen == Screen::Paused && pressed(pad, PAD_CIRCLE) && disconnectedPlayers == 0)
     {
         screen = Screen::Playing;
         return;
@@ -901,7 +1004,7 @@ void Game::Impl::updateMenu(float)
         else if (menuIndex == 2)
         {
             returnScreen = Screen::Menu;
-            pausePad = 0;
+            pausePad = firstConnectedPad();
             shopTab = ShopTab::Skins;
             menuIndex = 0;
             screen = Screen::Shop;
@@ -909,7 +1012,7 @@ void Game::Impl::updateMenu(float)
         else if (menuIndex == 3)
         {
             returnScreen = Screen::Menu;
-            pausePad = 0;
+            pausePad = firstConnectedPad();
             controlIndex = 0;
             screen = Screen::Controls;
         }
@@ -928,7 +1031,11 @@ void Game::Impl::updateMenu(float)
     }
     else if (screen == Screen::Paused)
     {
-        if (menuIndex == 0) screen = Screen::Playing;
+        if (menuIndex == 0)
+        {
+            if (disconnectedPlayers == 0) screen = Screen::Playing;
+            else showNotice("RECONECTE OS CONTROLES");
+        }
         else if (menuIndex == 1)
         {
             returnScreen = Screen::Paused;
@@ -1106,7 +1213,8 @@ void Game::Impl::updateShop(float)
 
 void Game::Impl::updateLobby(float dt)
 {
-    if (pressed(0, PAD_CIRCLE))
+    const int pad = firstConnectedPad();
+    if (pressed(pad, PAD_CIRCLE))
     {
         screen = Screen::Menu;
         menuIndex = 0;
@@ -1116,7 +1224,7 @@ void Game::Impl::updateLobby(float dt)
     if (controllerCount >= required)
     {
         lobbyTimer -= dt;
-        if (pressed(0, PAD_CROSS) || lobbyTimer <= 0.0f) startGame(localRequested ? controllerCount : 1);
+        if (pressed(pad, PAD_CROSS) || lobbyTimer <= 0.0f) startGame(localRequested ? controllerCount : 1);
     }
     else lobbyTimer = 3.0f;
 }
@@ -1150,10 +1258,13 @@ void Game::Impl::startGame(int count)
 {
     resetWorld();
     playerCount = std::max(1, std::min(4, std::min(count, controllerCount)));
+    disconnectedPlayers = 0;
+    int nextPad = 0;
     for (int i = 0; i < playerCount; ++i)
     {
         Player& player = players[i];
-        player.pad = i;
+        while (nextPad < 4 && !pads[nextPad].connected) ++nextPad;
+        player.pad = nextPad < 4 ? nextPad++ : firstConnectedPad();
         player.color = PLAYER_COLORS[i];
         player.x = SCREEN_W * 0.5f + (i - (playerCount - 1) * 0.5f) * 70.0f;
         player.y = SCREEN_H * 0.56f;
@@ -2144,17 +2255,22 @@ void Game::Impl::renderLobby()
     draw::panel(renderer, 330, 205, 1260, 670, CYAN, PANEL);
     draw::text(renderer, "SALA DE ESPERA", SCREEN_W / 2, 275, 6, CYAN, true);
     draw::text(renderer, localRequested ? "CO-OP LOCAL - ATE 4 JOGADORES" : "MODO SOLO", SCREEN_W / 2, 345, 3, SILVER, true);
-    for (int i = 0; i < std::max(1, controllerCount); ++i)
+    const int total = std::max(1, controllerCount);
+    int card = 0;
+    for (int pad = 0; pad < 4; ++pad)
     {
-        const int total = std::max(1, controllerCount);
+        if (!pads[pad].connected) continue;
         const int cardW = 220;
         const int gap = 26;
-        const int x = SCREEN_W / 2 - (total * cardW + (total - 1) * gap) / 2 + i * (cardW + gap);
+        const int x = SCREEN_W / 2 - (total * cardW + (total - 1) * gap) / 2 + card * (cardW + gap);
         const int y = 470;
-        draw::panel(renderer, x, y, cardW, 150, i < controllerCount ? PLAYER_COLORS[i] : RED, {0, 0, 0, 190});
-        draw::text(renderer, "P" + number(i + 1), x + cardW / 2, y + 30, 5, i < controllerCount ? PLAYER_COLORS[i] : RED, true);
-        draw::text(renderer, i < controllerCount ? "PRONTO" : "AUSENTE", x + cardW / 2, y + 95, 2, i < controllerCount ? GREEN : RED, true);
+        draw::panel(renderer, x, y, cardW, 150, PLAYER_COLORS[card], {0, 0, 0, 190});
+        draw::text(renderer, "P" + number(card + 1), x + cardW / 2, y + 30, 5, PLAYER_COLORS[card], true);
+        draw::text(renderer, "PRONTO", x + cardW / 2, y + 95, 2, GREEN, true);
+        ++card;
     }
+    if (controllerCount == 0)
+        draw::text(renderer, "NENHUM CONTROLE DETECTADO", SCREEN_W / 2, 530, 2, MUTED, true);
     const int required = localRequested ? 2 : 1;
     if (controllerCount >= required)
     {
@@ -2249,11 +2365,39 @@ void Game::Impl::renderShop()
 void Game::Impl::renderPause()
 {
     renderPlaying();
-    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, {0, 0, 8, 185});
-    draw::panel(renderer, 470, 160, 980, 780, CYAN, PANEL);
-    draw::text(renderer, "PAUSADO", SCREEN_W / 2, 220, 7, CYAN, true);
-    draw::text(renderer, "JOGADOR " + number(pausePad + 1) + " PAUSOU", SCREEN_W / 2, 305, 2, GOLD, true);
-    renderMenuOptions({"RETOMAR", "CONTROLES / AJUSTES", "LOJA DE COSMETICOS", "SALVAR PERFIL", "SAIR AO MENU"}, 390, 3);
+    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, {0, 0, 8, 120});
+    const bool disconnected = disconnectedPlayers != 0;
+    draw::panel(renderer, 620, 240, 680, 600, disconnected ? RED : CYAN, {2, 8, 24, 238});
+
+    if (disconnected)
+    {
+        int player = 0;
+        while (player < playerCount && (disconnectedPlayers & (1u << player)) == 0) ++player;
+        draw::text(renderer, "CONTROLE " + number(player + 1) + " DESCONECTADO", SCREEN_W / 2, 282, 4, RED, true);
+        draw::text(renderer, "RECONECTE PARA CONTINUAR", SCREEN_W / 2, 335, 2, GOLD, true);
+    }
+    else
+    {
+        draw::text(renderer, "PAUSADO", SCREEN_W / 2, 282, 6, CYAN, true);
+        draw::text(renderer, "JOGADOR " + number(pausePad + 1) + " PAUSOU", SCREEN_W / 2, 345, 2, GOLD, true);
+    }
+
+    const char* options[5] = {"RETOMAR", "CONTROLES / AJUSTES", "LOJA DE COSMETICOS", "SALVAR PERFIL", "SAIR AO MENU"};
+    for (int i = 0; i < 5; ++i)
+    {
+        const int x = 690;
+        const int y = 390 + i * 82;
+        const bool selected = menuIndex == i;
+        Color label = MUTED;
+        if (i == 3) label = GOLD;
+        else if (i == 4) label = RED;
+        else if (selected) label = WHITE;
+        if (i == 0 && disconnected) label = {70, 80, 100, 255};
+        draw::fillRect(renderer, x, y, 540, 68, selected ? Color{0, 75, 145, 105} : Color{0, 4, 16, 190});
+        draw::outlineRect(renderer, x, y, 540, 68, selected ? CYAN : withAlpha(CYAN, 80), selected ? 2 : 1);
+        if (selected) draw::triangle(renderer, x + 18, y + 34, x + 34, y + 23, x + 34, y + 45, CYAN);
+        draw::text(renderer, options[i], x + 300, y + 23, 3, label, true);
+    }
 }
 
 void Game::Impl::renderGameOver()
@@ -2528,29 +2672,50 @@ void Game::Impl::renderFloatingTexts(const Viewport& viewport, const Player& cam
 
 void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int index)
 {
-    const int padding = 18;
-    const int x = viewport.x + padding;
-    const int y = viewport.y + padding;
-    const int width = std::min(350, viewport.w - 36);
-    draw::fillRect(renderer, x, y, width, 126, {0, 4, 16, 185});
-    draw::outlineRect(renderer, x, y, width, 126, withAlpha(player.color, 110), 1);
-    draw::text(renderer, "JOGADOR " + number(index + 1), x + 12, y + 10, 2, player.color);
-    draw::text(renderer, "K " + number(player.kills) + "  G " + number(player.coins) + "  S " + number(profileSilver), x + 12, y + 39, 2, WHITE);
-    draw::fillRect(renderer, x + 12, y + 70, width - 24, 10, {30, 35, 50, 220});
-    draw::fillRect(renderer, x + 12, y + 70, static_cast<int>((width - 24) * std::max(0.0f, player.hp / player.maxHp)), 10, PINK);
-    draw::text(renderer, std::string("HABILIDADE [") + buttonName(player.keys[ActionSkill]) + "]", x + 12, y + 88, 1, MUTED);
-    draw::fillRect(renderer, x + 12, y + 108, width - 24, 8, {30, 35, 50, 220});
-    float skillRatio = player.timeStop > 0.0f ? player.timeStop / player.skillDuration : 1.0f - player.skillCooldown / player.skillCooldownMax;
-    draw::fillRect(renderer, x + 12, y + 108, static_cast<int>((width - 24) * clampf(skillRatio, 0.0f, 1.0f)), 8, player.timeStop > 0.0f ? RED : player.color);
+    const int padding = 14;
+    const int leftX = viewport.x + padding;
+    const int bottom = viewport.y + viewport.h - padding;
+    const int leftWidth = std::min(270, viewport.w / 2 - 24);
+    const int statsHeight = 106;
+    const int barsHeight = 90;
+    const int gap = 7;
+    const int statsY = bottom - barsHeight - gap - statsHeight;
+    const int barsY = bottom - barsHeight;
 
-    if (viewport.w >= 700)
+    draw::fillRect(renderer, leftX, statsY, leftWidth, statsHeight, {2, 6, 20, 230});
+    draw::outlineRect(renderer, leftX, statsY, leftWidth, statsHeight, withAlpha(CYAN, 45), 1);
+    draw::text(renderer, "JOGADOR " + number(index + 1), leftX + 15, statsY + 13, 1, player.color);
+    draw::text(renderer, "K " + number(player.kills) + " KILLS", leftX + 15, statsY + 43, 2, PINK);
+    draw::text(renderer, "G " + number(player.coins) + "   S " + number(profileSilver), leftX + 15, statsY + 72, 2, WHITE);
+
+    draw::fillRect(renderer, leftX, barsY, leftWidth, barsHeight, {2, 6, 20, 230});
+    draw::outlineRect(renderer, leftX, barsY, leftWidth, barsHeight, withAlpha(CYAN, 45), 1);
+    draw::text(renderer, "INTEGRIDADE", leftX + 15, barsY + 10, 1, MUTED);
+    draw::fillRect(renderer, leftX + 15, barsY + 29, leftWidth - 30, 8, {30, 35, 50, 220});
+    draw::fillRect(renderer, leftX + 15, barsY + 29, static_cast<int>((leftWidth - 30) * std::max(0.0f, player.hp / player.maxHp)), 8, {255, 88, 55, 255});
+    draw::text(renderer, std::string("HABILIDADE [") + buttonName(player.keys[ActionSkill]) + "]", leftX + 15, barsY + 48, 1, MUTED);
+    draw::fillRect(renderer, leftX + 15, barsY + 69, leftWidth - 30, 8, {30, 35, 50, 220});
+    float skillRatio = player.timeStop > 0.0f ? player.timeStop / player.skillDuration : 1.0f - player.skillCooldown / player.skillCooldownMax;
+    draw::fillRect(renderer, leftX + 15, barsY + 69, static_cast<int>((leftWidth - 30) * clampf(skillRatio, 0.0f, 1.0f)), 8, player.timeStop > 0.0f ? RED : player.color);
+
+    if (viewport.w >= 620)
     {
-        const int shopX = viewport.x + viewport.w - 360;
-        draw::fillRect(renderer, shopX, y, 340, 126, {0, 4, 16, 185});
-        draw::text(renderer, "UPGRADES", shopX + 12, y + 10, 2, GOLD);
-        draw::text(renderer, std::string(buttonName(player.keys[ActionUpgradeFire])) + " TIRO " + number(player.fireCost), shopX + 12, y + 39, 2, WHITE);
-        draw::text(renderer, std::string(buttonName(player.keys[ActionUpgradeDamage])) + " DANO " + number(player.damageCost), shopX + 12, y + 68, 2, WHITE);
-        draw::text(renderer, std::string(buttonName(player.keys[ActionUpgradeSkill])) + " HAB " + number(player.skillCost), shopX + 12, y + 97, 1, WHITE);
+        const int shopWidth = 260;
+        const int shopHeight = 130;
+        const int shopX = viewport.x + viewport.w - padding - shopWidth;
+        const int shopY = bottom - shopHeight;
+        draw::fillRect(renderer, shopX, shopY, shopWidth, shopHeight, {2, 6, 20, 230});
+        draw::outlineRect(renderer, shopX, shopY, shopWidth, shopHeight, withAlpha(CYAN, 45), 1);
+        draw::text(renderer, "UPGRADES", shopX + 15, shopY + 12, 1, MUTED);
+        draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeFire]) + "]", shopX + 15, shopY + 40, 1, MUTED);
+        draw::text(renderer, "TIRO", shopX + 88, shopY + 39, 1, WHITE);
+        draw::text(renderer, number(player.fireCost) + " G", shopX + 215, shopY + 39, 1, GOLD);
+        draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeDamage]) + "]", shopX + 15, shopY + 68, 1, MUTED);
+        draw::text(renderer, "DANO", shopX + 88, shopY + 67, 1, WHITE);
+        draw::text(renderer, number(player.damageCost) + " G", shopX + 215, shopY + 67, 1, GOLD);
+        draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
+        draw::text(renderer, "HAB.", shopX + 88, shopY + 95, 1, WHITE);
+        draw::text(renderer, number(player.skillCost) + " G", shopX + 215, shopY + 95, 1, GOLD);
     }
 }
 
@@ -2745,7 +2910,7 @@ void Game::Impl::render()
         draw::panel(renderer, SCREEN_W / 2 - width / 2, 30, width, 60, GOLD, {0, 4, 16, 235});
         draw::text(renderer, noticeText, SCREEN_W / 2, 51, 2, GOLD, true);
     }
-    draw::text(renderer, "FPS " + number(fpsValue), 16, SCREEN_H - 30, 2, fpsValue >= 55 ? GREEN : RED);
+    draw::text(renderer, "FPS " + number(fpsValue), 16, 16, 1, fpsValue >= 55 ? GREEN : RED);
 }
 
 Game::Game(SDL_Renderer* renderer) : impl_(new Impl(renderer))
