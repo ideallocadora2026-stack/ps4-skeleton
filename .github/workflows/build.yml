@@ -10,9 +10,7 @@ permissions:
 
 env:
   TOOLCHAIN_VERSION: v0.5.4
-  SDL_VERSION: v1.0
   TOOLCHAIN_SHA256: 3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526
-  SDL_SHA256: 40491e19b2d2d594f812ba245d42b5f63753981811d4461b6dbf2a472c5c8f77
 
 jobs:
   build:
@@ -49,19 +47,8 @@ jobs:
           test -x "$toolchain_root/bin/linux/create-fself"
           test -x "$toolchain_root/bin/linux/create-gp4"
           test -x "$toolchain_root/bin/linux/PkgTool.Core"
-
-      - name: Download verified SDL-PS4
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p third_party/SDL2
-          curl -fL --retry 3 \
-            "https://github.com/OpenOrbis/SDL-PS4/releases/download/${SDL_VERSION}/SDL2.tar.gz" \
-            -o "$RUNNER_TEMP/SDL2.tar.gz"
-          echo "${SDL_SHA256}  $RUNNER_TEMP/SDL2.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/SDL2.tar.gz" -C third_party/SDL2
-          test -s third_party/SDL2/include/SDL2/SDL.h
-          test -s third_party/SDL2/lib/libSDL2.a
+          test -s "$toolchain_root/include/SDL2/SDL.h"
+          test -s "$toolchain_root/lib/libSDL2.a"
 
       - name: Verify native project inputs
         shell: bash
@@ -105,18 +92,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Native.pkg
-          sha256sum output/Geometric-Wars-Native.pkg > output/Geometric-Wars-Native.pkg.sha256
-          ls -lh output/Geometric-Wars-Native.pkg
-          cat output/Geometric-Wars-Native.pkg.sha256
+          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Native-v1.11.pkg
+          sha256sum output/Geometric-Wars-Native-v1.11.pkg > output/Geometric-Wars-Native-v1.11.pkg.sha256
+          ls -lh output/Geometric-Wars-Native-v1.11.pkg
+          cat output/Geometric-Wars-Native-v1.11.pkg.sha256
 
       - name: Upload native PS4 package
         uses: actions/upload-artifact@v4
         with:
           name: Geometric-Wars-Native-PS4
           path: |
-            output/Geometric-Wars-Native.pkg
-            output/Geometric-Wars-Native.pkg.sha256
+            output/Geometric-Wars-Native-v1.11.pkg
+            output/Geometric-Wars-Native-v1.11.pkg.sha256
           if-no-files-found: error
           retention-days: 30
-

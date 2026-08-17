@@ -422,9 +422,11 @@ float Game::Impl::axis(int pad, int index) const
 
 void Game::Impl::rumble(int pad, float strength, uint32_t milliseconds)
 {
-    if (pad < 0 || pad >= controllerCount || !pads[pad].handle) return;
-    const Uint16 power = static_cast<Uint16>(clampf(strength, 0.0f, 1.0f) * 65535.0f);
-    SDL_JoystickRumble(pads[pad].handle, power / 2, power, milliseconds);
+    // The OpenOrbis SDL2 build has its generic haptic backend disabled.
+    // Leave rumble off until native video/input stability is confirmed on hardware.
+    (void)pad;
+    (void)strength;
+    (void)milliseconds;
 }
 
 uint32_t Game::Impl::randomNext()
@@ -1816,7 +1818,6 @@ void Game::Impl::render()
         case Screen::Shop: renderShop(); break;
         case Screen::GameOver: renderGameOver(); break;
     }
-    SDL_RenderPresent(renderer);
 }
 
 Game::Game(SDL_Renderer* renderer) : impl_(new Impl(renderer))
@@ -1843,4 +1844,3 @@ bool Game::running() const
     return impl_->active;
 }
 }
-

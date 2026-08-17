@@ -1,10 +1,10 @@
 TITLE      := Geometric Wars
-VERSION    := 1.10
+VERSION    := 1.11
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
-SDL_ROOT  ?= third_party/SDL2
+SDL_ROOT  ?= $(TOOLCHAIN)
 INTDIR    := build
 CDIR      := linux
 
@@ -16,7 +16,7 @@ OBJS     := $(patsubst src/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
 
 LIBS := -lSDL2 -lc -lm -lkernel -lc++ \
 	-lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
-	-lSceSysmodule -lSceFreeType -lSceSystemService
+	-lSceSysmodule -lSceSystemService
 
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O2 -fPIC \
 	-funwind-tables -c -isysroot $(TOOLCHAIN) \
@@ -90,4 +90,3 @@ $(CONTENT_ID).pkg: pkg.gp4
 
 clean:
 	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg output
-
