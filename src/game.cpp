@@ -634,7 +634,7 @@ bool Game::Impl::anyTimeStop() const
 
 void Game::Impl::addParticles(float x, float y, Color colorValue, int count, float speed, float life)
 {
-    for (int i = 0; i < count && particles.size() < 500; ++i)
+    for (int i = 0; i < count && particles.size() < 240; ++i)
     {
         const float angle = random01() * PI * 2.0f;
         const float velocity = speed * (0.35f + random01() * 0.65f);
@@ -1453,10 +1453,11 @@ void Game::Impl::renderBackdrop()
 {
     draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, BG);
     const float time = lastTick / 1000.0f;
-    for (int band = 0; band < 8; ++band)
+    for (int band = 0; band < 6; ++band)
     {
         const int margin = band * 90;
-        draw::fillRect(renderer, margin, margin / 2, SCREEN_W - margin * 2, SCREEN_H - margin, {4, static_cast<Uint8>(8 + band), static_cast<Uint8>(20 + band * 3), 30});
+        draw::outlineRect(renderer, margin, margin / 2, SCREEN_W - margin * 2, SCREEN_H - margin,
+                          {4, static_cast<Uint8>(18 + band * 3), static_cast<Uint8>(45 + band * 5), 85}, 2);
     }
     for (int i = 0; i < 100; ++i)
     {
@@ -1491,6 +1492,8 @@ void Game::Impl::renderMenuOptions(const std::vector<std::string>& options, int 
 void Game::Impl::renderMenu()
 {
     renderBackdrop();
+    const std::string credits = "Criado por David Alerrandro - MXxtomxXy.";
+    draw::text(renderer, credits, SCREEN_W - 28 - draw::textWidth(credits, 2), 28, 2, SILVER);
     draw::panel(renderer, 430, 105, 1060, 870, CYAN, PANEL);
     draw::text(renderer, "GEOMETRIC WARS", SCREEN_W / 2, 180, 8, CYAN, true);
     draw::text(renderer, "PS4 EDITION - NATIVO", SCREEN_W / 2, 265, 3, SILVER, true);
@@ -1590,6 +1593,8 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
     const int x = static_cast<int>(point.x);
     const int y = static_cast<int>(point.y);
     const int radius = static_cast<int>(enemy.radius);
+    if (x < viewport.x - radius - 12 || x > viewport.x + viewport.w + radius + 12 ||
+        y < viewport.y - radius - 12 || y > viewport.y + viewport.h + radius + 12) return;
     if (enemy.edges == 3)
     {
         draw::triangle(renderer, x, y - radius, x - radius, y + radius, x + radius, y + radius, enemy.color);
@@ -1717,6 +1722,8 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
     for (unsigned i = 0; i < walls.size(); ++i)
     {
         const Vec2 point = toScreen(viewport, cameraPlayer, walls[i].x, walls[i].y);
+        if (point.x + walls[i].w < viewport.x || point.x > viewport.x + viewport.w ||
+            point.y + walls[i].h < viewport.y || point.y > viewport.y + viewport.h) continue;
         draw::fillRect(renderer, static_cast<int>(point.x), static_cast<int>(point.y), static_cast<int>(walls[i].w), static_cast<int>(walls[i].h), {20, 60, 120, 150});
         draw::outlineRect(renderer, static_cast<int>(point.x), static_cast<int>(point.y), static_cast<int>(walls[i].w), static_cast<int>(walls[i].h), CYAN_DIM, 2);
     }
@@ -1731,6 +1738,8 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
     {
         const Particle& particle = particles[i];
         const Vec2 point = toScreen(viewport, cameraPlayer, particle.x, particle.y);
+        if (point.x < viewport.x - particle.size || point.x > viewport.x + viewport.w + particle.size ||
+            point.y < viewport.y - particle.size || point.y > viewport.y + viewport.h + particle.size) continue;
         Color particleColor = particle.color;
         particleColor.a = static_cast<Uint8>(255.0f * clampf(particle.life / particle.maxLife, 0.0f, 1.0f));
         draw::fillRect(renderer, static_cast<int>(point.x), static_cast<int>(point.y), static_cast<int>(particle.size), static_cast<int>(particle.size), particleColor);

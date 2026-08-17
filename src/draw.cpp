@@ -145,20 +145,28 @@ void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
     if (radius <= 0) return;
     color(renderer, value);
+    SDL_Rect spans[512];
+    int count = 0;
     for (int y = -radius; y <= radius; ++y)
     {
         const int span = static_cast<int>(std::sqrt(static_cast<float>(radius * radius - y * y)));
-        SDL_RenderDrawLine(renderer, cx - span, cy + y, cx + span, cy + y);
+        if (count == 512)
+        {
+            SDL_RenderFillRects(renderer, spans, count);
+            count = 0;
+        }
+        spans[count++] = {cx - span, cy + y, span * 2 + 1, 1};
     }
+    if (count > 0) SDL_RenderFillRects(renderer, spans, count);
 }
 
 void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value, int glow)
 {
-    for (int i = glow; i > 0; i -= 3)
+    if (glow > 0)
     {
         Color haze = value;
-        haze.a = static_cast<Uint8>(std::max(4, static_cast<int>(value.a) * (glow - i + 2) / (glow * 10 + 1)));
-        fillCircle(renderer, cx, cy, radius + i, haze);
+        haze.a = static_cast<Uint8>(std::max(10, static_cast<int>(value.a) / 9));
+        fillCircle(renderer, cx, cy, radius + glow, haze);
     }
     fillCircle(renderer, cx, cy, radius, value);
 }
@@ -210,6 +218,9 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
 {
     if (scale <= 0) return;
     if (centered) x -= textWidth(value, scale) / 2;
+    color(renderer, valueColor);
+    SDL_Rect blocks[256];
+    int blockCount = 0;
     for (unsigned index = 0; index < value.size(); ++index)
     {
         const Uint8* rows = glyph(value[index]);
@@ -218,11 +229,18 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
             for (int row = 0; row < 7; ++row)
                 for (int column = 0; column < 5; ++column)
                     if ((rows[row] & (1 << (4 - column))) != 0)
-                        fillRect(renderer, x + column * scale, y + row * scale, scale, scale, valueColor);
+                    {
+                        if (blockCount == 256)
+                        {
+                            SDL_RenderFillRects(renderer, blocks, blockCount);
+                            blockCount = 0;
+                        }
+                        blocks[blockCount++] = {x + column * scale, y + row * scale, scale, scale};
+                    }
         }
         x += 6 * scale;
     }
+    if (blockCount > 0) SDL_RenderFillRects(renderer, blocks, blockCount);
 }
 }
 }
-

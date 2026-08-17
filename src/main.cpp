@@ -11,6 +11,8 @@ namespace
 {
 const int SCREEN_WIDTH = 1920;
 const int SCREEN_HEIGHT = 1080;
+const int RENDER_WIDTH = 960;
+const int RENDER_HEIGHT = 540;
 
 void stopOnStartupError(const char* stage)
 {
@@ -40,10 +42,18 @@ int main(int, char**)
     if (!surface)
         stopOnStartupError("SDL_GetWindowSurface");
 
-    SDL_Renderer* renderer = surface ? SDL_CreateSoftwareRenderer(surface) : nullptr;
+    // OpenOrbis uses a software renderer. Draw at half resolution and scale the
+    // finished frame to 1080p; this removes most of the per-pixel CPU cost.
+    SDL_Surface* frameSurface = SDL_CreateRGBSurfaceWithFormat(
+        0, RENDER_WIDTH, RENDER_HEIGHT, 32, surface->format->format);
+    if (!frameSurface)
+        stopOnStartupError("SDL_CreateRGBSurfaceWithFormat");
+
+    SDL_Renderer* renderer = SDL_CreateSoftwareRenderer(frameSurface);
     if (!renderer)
         stopOnStartupError("SDL_CreateSoftwareRenderer");
 
+    SDL_RenderSetScale(renderer, 0.5f, 0.5f);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     gw::Game game(renderer);
     if (!game.initialize())
@@ -53,6 +63,8 @@ int main(int, char**)
     {
         const uint32_t frameStart = SDL_GetTicks();
         game.tick(frameStart);
+        if (SDL_BlitScaled(frameSurface, nullptr, surface, nullptr) != 0)
+            stopOnStartupError("SDL_BlitScaled");
         SDL_UpdateWindowSurface(window);
 
         const uint32_t elapsed = SDL_GetTicks() - frameStart;
@@ -60,6 +72,7 @@ int main(int, char**)
     }
 
     SDL_DestroyRenderer(renderer);
+    SDL_FreeSurface(frameSurface);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
