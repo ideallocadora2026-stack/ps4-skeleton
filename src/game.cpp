@@ -2857,14 +2857,17 @@ void Game::Impl::handleEnemies(float dt)
             float nearest = 1e30f;
             if (enemy.kind == 1 && enemy.targetPlayer >= 0 && enemy.targetPlayer < playerCount && players[enemy.targetPlayer].hp > 0.0f)
                 target = &players[enemy.targetPlayer];
-            for (int p = 0; p < playerCount && !target; ++p)
+            if (!target)
             {
-                if (players[p].hp <= 0.0f) continue;
-                const float d = distanceSquared(enemy.x, enemy.y, players[p].x, players[p].y);
-                if (d < nearest)
+                for (int p = 0; p < playerCount; ++p)
                 {
-                    nearest = d;
-                    target = &players[p];
+                    if (players[p].hp <= 0.0f) continue;
+                    const float d = distanceSquared(enemy.x, enemy.y, players[p].x, players[p].y);
+                    if (d < nearest)
+                    {
+                        nearest = d;
+                        target = &players[p];
+                    }
                 }
             }
             if (target)
