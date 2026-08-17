@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 
 #include <orbis/libkernel.h>
+#include <orbis/SystemService.h>
 
 #include <stdio.h>
 
@@ -23,13 +24,19 @@ void stopOnStartupError(const char* stage)
 int main(int, char**)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    sceSystemServiceHideSplashScreen();
 
-    // SDL remains responsible only for controller input and timing. Video is
-    // presented by Piglet/OpenGL ES on the PS4 GPU.
-    if (SDL_Init(SDL_INIT_JOYSTICK) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0)
         stopOnStartupError(SDL_GetError());
-    if (!gw::draw::initialize(SCREEN_WIDTH, SCREEN_HEIGHT))
-        stopOnStartupError("Piglet/OpenGL ES");
+
+    SDL_Window* window = SDL_CreateWindow(
+        "Geometric Wars", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+        SCREEN_WIDTH, SCREEN_HEIGHT, 0);
+    if (!window) stopOnStartupError(SDL_GetError());
+    SDL_Surface* surface = SDL_GetWindowSurface(window);
+    if (!surface) stopOnStartupError(SDL_GetError());
+    if (!gw::draw::initialize(surface))
+        stopOnStartupError("framebuffer ARGB8888");
 
     gw::Game game(nullptr);
     if (!game.initialize())
@@ -42,7 +49,9 @@ int main(int, char**)
         gw::draw::beginFrame();
         game.tick(tick);
         if (!gw::draw::present())
-            stopOnStartupError("eglSwapBuffers");
+            stopOnStartupError("framebuffer");
+        if (SDL_UpdateWindowSurface(window) != 0)
+            stopOnStartupError(SDL_GetError());
 
         nextFrame += FRAME_TIME_US;
         const uint64_t now = sceKernelGetProcessTime();
@@ -53,6 +62,7 @@ int main(int, char**)
     }
 
     gw::draw::shutdown();
+    SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
 }

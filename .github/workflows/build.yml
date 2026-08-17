@@ -49,9 +49,6 @@ jobs:
           test -x "$toolchain_root/bin/linux/PkgTool.Core"
           test -s "$toolchain_root/include/SDL2/SDL.h"
           test -s "$toolchain_root/lib/libSDL2.a"
-          test -s "$toolchain_root/include/orbis/Pigletv2VSH.h"
-          test -s "$toolchain_root/lib/libScePigletv2VSH.so"
-          test -s "$toolchain_root/lib/libScePrecompiledShaders.so"
 
       - name: Verify native project inputs
         shell: bash
@@ -60,8 +57,6 @@ jobs:
           test -s src/main.cpp
           test -s src/game.cpp
           test -s src/draw.cpp
-          test -s src/gpu.cpp
-          test -s src/gpu.hpp
           test -s sce_sys/icon0.png
           test -s sce_sys/pic0.png
           test -s sce_sys/pic1.png
@@ -97,17 +92,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-GPU-v1.13.pkg
-          sha256sum output/Geometric-Wars-GPU-v1.13.pkg > output/Geometric-Wars-GPU-v1.13.pkg.sha256
-          ls -lh output/Geometric-Wars-GPU-v1.13.pkg
-          cat output/Geometric-Wars-GPU-v1.13.pkg.sha256
+          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-SIMD-v1.14.pkg
+          sha256sum output/Geometric-Wars-SIMD-v1.14.pkg > output/Geometric-Wars-SIMD-v1.14.pkg.sha256
+          ls -lh output/Geometric-Wars-SIMD-v1.14.pkg
+          cat output/Geometric-Wars-SIMD-v1.14.pkg.sha256
 
       - name: Upload native PS4 package
         uses: actions/upload-artifact@v4
         with:
           name: Geometric-Wars-Native-PS4
           path: |
-            output/Geometric-Wars-GPU-v1.13.pkg
-            output/Geometric-Wars-GPU-v1.13.pkg.sha256
+            output/Geometric-Wars-SIMD-v1.14.pkg
+            output/Geometric-Wars-SIMD-v1.14.pkg.sha256
           if-no-files-found: error
           retention-days: 30

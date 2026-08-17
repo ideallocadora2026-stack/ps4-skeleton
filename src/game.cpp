@@ -257,7 +257,7 @@ struct Game::Impl
 {
     explicit Impl(SDL_Renderer* value)
         : renderer(value), active(true), screen(Screen::Menu), returnScreen(Screen::Menu), menuIndex(0),
-          pausePad(0), controllerCount(0), playerCount(0), lastTick(0), rng(0xc0ffee11u),
+          pausePad(0), controllerCount(0), playerCount(0), lastTick(0), fpsTimer(0), fpsFrames(0), fpsValue(0), rng(0xc0ffee11u),
           mapMinX(0), mapMinY(0), mapMaxX(SCREEN_W), mapMaxY(SCREEN_H), wave(1),
           waveElapsed(0), spawnTimer(0), announcementTimer(0), bossDelay(0), cameraShake(0),
           totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0),
@@ -283,6 +283,9 @@ struct Game::Impl
     Player players[4];
     int playerCount;
     uint32_t lastTick;
+    uint32_t fpsTimer;
+    int fpsFrames;
+    int fpsValue;
     uint32_t rng;
 
     float mapMinX;
@@ -449,6 +452,15 @@ int Game::Impl::randomInt(int minimum, int maximum)
 
 void Game::Impl::tick(uint32_t now)
 {
+    ++fpsFrames;
+    if (fpsTimer == 0) fpsTimer = now;
+    else if (now - fpsTimer >= 500)
+    {
+        fpsValue = static_cast<int>(fpsFrames * 1000u / (now - fpsTimer));
+        fpsFrames = 0;
+        fpsTimer = now;
+    }
+
     sampleInput();
     if (!active) return;
 
@@ -1818,6 +1830,7 @@ void Game::Impl::render()
         case Screen::Shop: renderShop(); break;
         case Screen::GameOver: renderGameOver(); break;
     }
+    draw::text(renderer, "FPS " + number(fpsValue), 16, SCREEN_H - 30, 2, fpsValue >= 55 ? GREEN : RED);
 }
 
 Game::Game(SDL_Renderer* renderer) : impl_(new Impl(renderer))

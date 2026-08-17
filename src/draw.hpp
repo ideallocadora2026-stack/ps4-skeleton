@@ -16,7 +16,7 @@ struct Color
 
 namespace draw
 {
-bool initialize(int width, int height);
+bool initialize(SDL_Surface* surface);
 void shutdown();
 void beginFrame();
 bool present();

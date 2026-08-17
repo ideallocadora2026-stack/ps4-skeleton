@@ -1,5 +1,5 @@
 TITLE      := Geometric Wars
-VERSION    := 1.13
+VERSION    := 1.14
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
@@ -16,12 +16,9 @@ OBJS     := $(patsubst src/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
 
 LIBS := -lSDL2 -lc -lm -lkernel -lc++ \
 	-lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
-	-lSceShellCoreUtil -lSceSysmodule -lSceSystemService \
-	-lScePigletv2VSH -lScePrecompiledShaders -lSceRtc
+	-lSceSysmodule -lSceSystemService
 
-AUTHINFO := "000000000000000000000000001C004000FF000000000080000000000000000000000000000000000000008000400040000000000000008000000000000000080040FFFF000000F000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-
-CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O2 -fPIC -fexceptions -fcxx-exceptions \
+CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O2 -fPIC \
 	-funwind-tables -c -isysroot $(TOOLCHAIN) \
 	-isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1 \
 	-I$(SDL_ROOT)/include -Isrc
@@ -51,9 +48,6 @@ check-toolchain:
 	@test -x "$(TOOLS)/create-gp4"
 	@test -x "$(TOOLS)/PkgTool.Core"
 	@test -s "$(TOOLCHAIN)/lib/crt1.o"
-	@test -s "$(TOOLCHAIN)/include/orbis/Pigletv2VSH.h"
-	@test -s "$(TOOLCHAIN)/lib/libScePigletv2VSH.so"
-	@test -s "$(TOOLCHAIN)/lib/libScePrecompiledShaders.so"
 
 check-sdl:
 	@test -s "$(SDL_ROOT)/include/SDL2/SDL.h" || (echo "SDL2 headers nao encontrados em $(SDL_ROOT)." && exit 1)
@@ -70,7 +64,7 @@ $(INTDIR)/GeometricWars.elf: $(OBJS)
 
 eboot.bin: $(INTDIR)/GeometricWars.elf
 	$(TOOLS)/create-fself -in=$< -out=$(INTDIR)/GeometricWars.oelf \
-		--eboot "$@" --paid 0x3800000000000035 --authinfo $(AUTHINFO)
+		--eboot "$@" --paid 0x3800000000000011
 
 sce_sys/param.sfo: Makefile
 	mkdir -p sce_sys
@@ -79,11 +73,10 @@ sce_sys/param.sfo: Makefile
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ APP_TYPE --type Integer --maxsize 4 --value 1
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ APP_VER --type Utf8 --maxsize 8 --value '$(VERSION)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ ATTRIBUTE --type Integer --maxsize 4 --value 0
-	$(TOOLS)/PkgTool.Core sfo_setentry $@ CATEGORY --type Utf8 --maxsize 4 --value 'gde'
-	$(TOOLS)/PkgTool.Core sfo_setentry $@ FORMAT --type Utf8 --maxsize 4 --value 'obs'
+	$(TOOLS)/PkgTool.Core sfo_setentry $@ CATEGORY --type Utf8 --maxsize 4 --value 'gd'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ CONTENT_ID --type Utf8 --maxsize 48 --value '$(CONTENT_ID)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0
-	$(TOOLS)/PkgTool.Core sfo_setentry $@ SYSTEM_VER --type Integer --maxsize 4 --value 1020
+	$(TOOLS)/PkgTool.Core sfo_setentry $@ SYSTEM_VER --type Integer --maxsize 4 --value 0
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ TITLE --type Utf8 --maxsize 128 --value '$(TITLE)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'

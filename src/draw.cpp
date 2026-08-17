@@ -1,8 +1,9 @@
 #include "draw.hpp"
 
-#include "gpu.hpp"
-
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <emmintrin.h>
 
 namespace gw
 {
@@ -77,38 +78,150 @@ const Uint8* glyph(char value)
         if (GLYPHS[i].character == value) return GLYPHS[i].rows;
     return nullptr;
 }
+
+SDL_Surface* targetSurface = nullptr;
+uint32_t* pixels = nullptr;
+int pitchPixels = 0;
+int surfaceWidth = 0;
+int surfaceHeight = 0;
+int clipLeft = 0;
+int clipTop = 0;
+int clipRight = 0;
+int clipBottom = 0;
+bool surfaceLocked = false;
+
+uint32_t packed(Color value)
+{
+    return (static_cast<uint32_t>(value.a) << 24) |
+           (static_cast<uint32_t>(value.r) << 16) |
+           (static_cast<uint32_t>(value.g) << 8) |
+           static_cast<uint32_t>(value.b);
+}
+
+int blendedChannel(int source, int destination, int alpha)
+{
+    return (source * alpha + destination * (255 - alpha) + 127) / 255;
+}
+
+void blendSpan(int y, int x1, int x2, Color value)
+{
+    if (!pixels || value.a == 0 || y < clipTop || y >= clipBottom) return;
+    x1 = std::max(x1, clipLeft);
+    x2 = std::min(x2, clipRight);
+    if (x1 >= x2) return;
+
+    uint32_t* destination = pixels + y * pitchPixels + x1;
+    const int count = x2 - x1;
+    if (value.a == 255)
+    {
+        std::fill(destination, destination + count, packed(value));
+        return;
+    }
+
+    const int alpha = value.a;
+    const int inverse = 255 - alpha;
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i source = _mm_set_epi16(255, value.r, value.g, value.b, 255, value.r, value.g, value.b);
+    const __m128i sourceAlpha = _mm_set1_epi16(static_cast<short>(alpha));
+    const __m128i destinationAlpha = _mm_set1_epi16(static_cast<short>(inverse));
+    const __m128i rounding = _mm_set1_epi16(128);
+
+    int index = 0;
+    for (; index + 4 <= count; index += 4)
+    {
+        const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(destination + index));
+        __m128i low = _mm_unpacklo_epi8(bytes, zero);
+        __m128i high = _mm_unpackhi_epi8(bytes, zero);
+
+        low = _mm_add_epi16(_mm_mullo_epi16(source, sourceAlpha), _mm_mullo_epi16(low, destinationAlpha));
+        high = _mm_add_epi16(_mm_mullo_epi16(source, sourceAlpha), _mm_mullo_epi16(high, destinationAlpha));
+        low = _mm_add_epi16(low, rounding);
+        high = _mm_add_epi16(high, rounding);
+        low = _mm_add_epi16(low, _mm_srli_epi16(low, 8));
+        high = _mm_add_epi16(high, _mm_srli_epi16(high, 8));
+        low = _mm_srli_epi16(low, 8);
+        high = _mm_srli_epi16(high, 8);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + index), _mm_packus_epi16(low, high));
+    }
+
+    for (; index < count; ++index)
+    {
+        const uint32_t old = destination[index];
+        const int red = blendedChannel(value.r, (old >> 16) & 0xff, alpha);
+        const int green = blendedChannel(value.g, (old >> 8) & 0xff, alpha);
+        const int blue = blendedChannel(value.b, old & 0xff, alpha);
+        destination[index] = 0xff000000u | (static_cast<uint32_t>(red) << 16) |
+                             (static_cast<uint32_t>(green) << 8) | static_cast<uint32_t>(blue);
+    }
+}
 }
 
 namespace draw
 {
-bool initialize(int width, int height)
+bool initialize(SDL_Surface* surface)
 {
-    return gpu::initialize(width, height);
+    if (!surface || !surface->pixels || !surface->format || surface->format->BytesPerPixel != 4) return false;
+    targetSurface = surface;
+    pixels = static_cast<uint32_t*>(surface->pixels);
+    pitchPixels = surface->pitch / 4;
+    surfaceWidth = surface->w;
+    surfaceHeight = surface->h;
+    clipLeft = 0;
+    clipTop = 0;
+    clipRight = surfaceWidth;
+    clipBottom = surfaceHeight;
+    return true;
 }
 
 void shutdown()
 {
-    gpu::shutdown();
+    if (surfaceLocked && targetSurface) SDL_UnlockSurface(targetSurface);
+    surfaceLocked = false;
+    targetSurface = nullptr;
+    pixels = nullptr;
 }
 
 void beginFrame()
 {
-    gpu::beginFrame();
+    if (targetSurface && SDL_MUSTLOCK(targetSurface))
+    {
+        if (SDL_LockSurface(targetSurface) == 0)
+        {
+            surfaceLocked = true;
+            pixels = static_cast<uint32_t*>(targetSurface->pixels);
+            pitchPixels = targetSurface->pitch / 4;
+        }
+    }
+    clipLeft = 0;
+    clipTop = 0;
+    clipRight = surfaceWidth;
+    clipBottom = surfaceHeight;
 }
 
 bool present()
 {
-    return gpu::present();
+    if (surfaceLocked && targetSurface)
+    {
+        SDL_UnlockSurface(targetSurface);
+        surfaceLocked = false;
+    }
+    return pixels != nullptr;
 }
 
 void setClipRect(int x, int y, int w, int h)
 {
-    gpu::setClip(x, y, w, h);
+    clipLeft = std::max(0, x);
+    clipTop = std::max(0, y);
+    clipRight = std::min(surfaceWidth, x + std::max(0, w));
+    clipBottom = std::min(surfaceHeight, y + std::max(0, h));
 }
 
 void clearClipRect()
 {
-    gpu::clearClip();
+    clipLeft = 0;
+    clipTop = 0;
+    clipRight = surfaceWidth;
+    clipBottom = surfaceHeight;
 }
 
 void color(SDL_Renderer* renderer, Color value)
@@ -120,8 +233,11 @@ void color(SDL_Renderer* renderer, Color value)
 void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value)
 {
     (void)renderer;
-    gpu::fillRect(static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
-                  value.r, value.g, value.b, value.a);
+    if (w <= 0 || h <= 0) return;
+    const int firstY = std::max(y, clipTop);
+    const int lastY = std::min(y + h, clipBottom);
+    for (int row = firstY; row < lastY; ++row)
+        blendSpan(row, x, x + w, value);
 }
 
 void outlineRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value, int thickness)
@@ -136,22 +252,76 @@ void outlineRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value
 void line(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, Color value, int thickness)
 {
     (void)renderer;
-    gpu::line(static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(x2), static_cast<float>(y2),
-              static_cast<float>(std::max(1, thickness)), value.r, value.g, value.b, value.a);
+    const int dx = x2 - x1;
+    const int dy = y2 - y1;
+    const int steps = std::max(std::abs(dx), std::abs(dy));
+    const int size = std::max(1, thickness);
+    const int half = size / 2;
+    if (y1 == y2)
+    {
+        fillRect(renderer, std::min(x1, x2), y1 - half, std::abs(dx) + 1, size, value);
+        return;
+    }
+    if (x1 == x2)
+    {
+        fillRect(renderer, x1 - half, std::min(y1, y2), size, std::abs(dy) + 1, value);
+        return;
+    }
+    if (steps == 0)
+    {
+        fillRect(renderer, x1 - half, y1 - half, size, size, value);
+        return;
+    }
+    const float stepX = static_cast<float>(dx) / steps;
+    const float stepY = static_cast<float>(dy) / steps;
+    float x = static_cast<float>(x1);
+    float y = static_cast<float>(y1);
+    for (int i = 0; i <= steps; ++i)
+    {
+        const int px = static_cast<int>(x + 0.5f) - half;
+        const int py = static_cast<int>(y + 0.5f) - half;
+        for (int row = 0; row < size; ++row) blendSpan(py + row, px, px + size, value);
+        x += stepX;
+        y += stepY;
+    }
 }
 
 void circle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
     (void)renderer;
-    gpu::circle(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(radius), 2.0f,
-                value.r, value.g, value.b, value.a);
+    if (radius <= 0) return;
+    int x = radius;
+    int y = 0;
+    int error = 1 - radius;
+    while (x >= y)
+    {
+        blendSpan(cy + y, cx + x, cx + x + 2, value);
+        blendSpan(cy + x, cx + y, cx + y + 2, value);
+        blendSpan(cy + x, cx - y, cx - y + 2, value);
+        blendSpan(cy + y, cx - x, cx - x + 2, value);
+        blendSpan(cy - y, cx - x, cx - x + 2, value);
+        blendSpan(cy - x, cx - y, cx - y + 2, value);
+        blendSpan(cy - x, cx + y, cx + y + 2, value);
+        blendSpan(cy - y, cx + x, cx + x + 2, value);
+        ++y;
+        if (error < 0) error += 2 * y + 1;
+        else
+        {
+            --x;
+            error += 2 * (y - x) + 1;
+        }
+    }
 }
 
 void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
     (void)renderer;
-    gpu::fillCircle(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(radius),
-                    value.r, value.g, value.b, value.a);
+    if (radius <= 0) return;
+    for (int y = -radius; y <= radius; ++y)
+    {
+        const int span = static_cast<int>(std::sqrt(static_cast<float>(radius * radius - y * y)));
+        blendSpan(cy + y, cx - span, cx + span + 1, value);
+    }
 }
 
 void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value, int glow)
@@ -168,8 +338,31 @@ void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value,
 void triangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, int y3, Color value)
 {
     (void)renderer;
-    gpu::triangle(static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(x2), static_cast<float>(y2),
-                  static_cast<float>(x3), static_cast<float>(y3), value.r, value.g, value.b, value.a);
+    const int minY = std::min(y1, std::min(y2, y3));
+    const int maxY = std::max(y1, std::max(y2, y3));
+    const int xs[3] = {x1, x2, x3};
+    const int ys[3] = {y1, y2, y3};
+    for (int y = minY; y <= maxY; ++y)
+    {
+        int intersections[3];
+        int count = 0;
+        for (int edge = 0; edge < 3; ++edge)
+        {
+            const int next = (edge + 1) % 3;
+            const int ya = ys[edge];
+            const int yb = ys[next];
+            if ((y >= ya && y < yb) || (y >= yb && y < ya))
+            {
+                const float t = static_cast<float>(y - ya) / static_cast<float>(yb - ya);
+                intersections[count++] = static_cast<int>(xs[edge] + (xs[next] - xs[edge]) * t);
+            }
+        }
+        if (count >= 2)
+        {
+            if (intersections[0] > intersections[1]) std::swap(intersections[0], intersections[1]);
+            blendSpan(y, intersections[0], intersections[1] + 1, value);
+        }
+    }
 }
 
 void panel(SDL_Renderer* renderer, int x, int y, int w, int h, Color border, Color background)
