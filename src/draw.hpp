@@ -16,6 +16,12 @@ struct Color
 
 namespace draw
 {
+bool initialize(int width, int height);
+void shutdown();
+void beginFrame();
+bool present();
+void setClipRect(int x, int y, int w, int h);
+void clearClipRect();
 void color(SDL_Renderer* renderer, Color value);
 void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value);
 void outlineRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value, int thickness = 1);
@@ -29,4 +35,3 @@ int textWidth(const std::string& text, int scale);
 void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int scale, Color textColor, bool centered = false);
 }
 }
-

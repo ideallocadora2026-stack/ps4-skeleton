@@ -1,7 +1,8 @@
 #include "draw.hpp"
 
+#include "gpu.hpp"
+
 #include <algorithm>
-#include <cmath>
 
 namespace gw
 {
@@ -80,125 +81,95 @@ const Uint8* glyph(char value)
 
 namespace draw
 {
+bool initialize(int width, int height)
+{
+    return gpu::initialize(width, height);
+}
+
+void shutdown()
+{
+    gpu::shutdown();
+}
+
+void beginFrame()
+{
+    gpu::beginFrame();
+}
+
+bool present()
+{
+    return gpu::present();
+}
+
+void setClipRect(int x, int y, int w, int h)
+{
+    gpu::setClip(x, y, w, h);
+}
+
+void clearClipRect()
+{
+    gpu::clearClip();
+}
+
 void color(SDL_Renderer* renderer, Color value)
 {
-    SDL_SetRenderDrawColor(renderer, value.r, value.g, value.b, value.a);
+    (void)renderer;
+    (void)value;
 }
 
 void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value)
 {
-    if (w <= 0 || h <= 0) return;
-    color(renderer, value);
-    SDL_Rect rectangle = {x, y, w, h};
-    SDL_RenderFillRect(renderer, &rectangle);
+    (void)renderer;
+    gpu::fillRect(static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
+                  value.r, value.g, value.b, value.a);
 }
 
 void outlineRect(SDL_Renderer* renderer, int x, int y, int w, int h, Color value, int thickness)
 {
-    for (int i = 0; i < thickness; ++i)
-    {
-        color(renderer, value);
-        SDL_Rect rectangle = {x + i, y + i, w - i * 2, h - i * 2};
-        if (rectangle.w > 0 && rectangle.h > 0) SDL_RenderDrawRect(renderer, &rectangle);
-    }
+    if (w <= 0 || h <= 0 || thickness <= 0) return;
+    fillRect(renderer, x, y, w, thickness, value);
+    fillRect(renderer, x, y + h - thickness, w, thickness, value);
+    fillRect(renderer, x, y + thickness, thickness, h - thickness * 2, value);
+    fillRect(renderer, x + w - thickness, y + thickness, thickness, h - thickness * 2, value);
 }
 
 void line(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, Color value, int thickness)
 {
-    color(renderer, value);
-    const int half = std::max(0, thickness / 2);
-    for (int offset = -half; offset <= half; ++offset)
-    {
-        SDL_RenderDrawLine(renderer, x1 + offset, y1, x2 + offset, y2);
-        if (thickness > 2) SDL_RenderDrawLine(renderer, x1, y1 + offset, x2, y2 + offset);
-    }
+    (void)renderer;
+    gpu::line(static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(x2), static_cast<float>(y2),
+              static_cast<float>(std::max(1, thickness)), value.r, value.g, value.b, value.a);
 }
 
 void circle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
-    if (radius <= 0) return;
-    color(renderer, value);
-    int x = radius;
-    int y = 0;
-    int error = 1 - radius;
-    while (x >= y)
-    {
-        SDL_RenderDrawPoint(renderer, cx + x, cy + y);
-        SDL_RenderDrawPoint(renderer, cx + y, cy + x);
-        SDL_RenderDrawPoint(renderer, cx - y, cy + x);
-        SDL_RenderDrawPoint(renderer, cx - x, cy + y);
-        SDL_RenderDrawPoint(renderer, cx - x, cy - y);
-        SDL_RenderDrawPoint(renderer, cx - y, cy - x);
-        SDL_RenderDrawPoint(renderer, cx + y, cy - x);
-        SDL_RenderDrawPoint(renderer, cx + x, cy - y);
-        ++y;
-        if (error < 0) error += 2 * y + 1;
-        else
-        {
-            --x;
-            error += 2 * (y - x) + 1;
-        }
-    }
+    (void)renderer;
+    gpu::circle(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(radius), 2.0f,
+                value.r, value.g, value.b, value.a);
 }
 
 void fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value)
 {
-    if (radius <= 0) return;
-    color(renderer, value);
-    SDL_Rect spans[512];
-    int count = 0;
-    for (int y = -radius; y <= radius; ++y)
-    {
-        const int span = static_cast<int>(std::sqrt(static_cast<float>(radius * radius - y * y)));
-        if (count == 512)
-        {
-            SDL_RenderFillRects(renderer, spans, count);
-            count = 0;
-        }
-        spans[count++] = {cx - span, cy + y, span * 2 + 1, 1};
-    }
-    if (count > 0) SDL_RenderFillRects(renderer, spans, count);
+    (void)renderer;
+    gpu::fillCircle(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(radius),
+                    value.r, value.g, value.b, value.a);
 }
 
 void glowCircle(SDL_Renderer* renderer, int cx, int cy, int radius, Color value, int glow)
 {
-    if (glow > 0)
+    for (int i = glow; i > 0; i -= 3)
     {
         Color haze = value;
-        haze.a = static_cast<Uint8>(std::max(10, static_cast<int>(value.a) / 9));
-        fillCircle(renderer, cx, cy, radius + glow, haze);
+        haze.a = static_cast<Uint8>(std::max(4, static_cast<int>(value.a) * (glow - i + 2) / (glow * 10 + 1)));
+        fillCircle(renderer, cx, cy, radius + i, haze);
     }
     fillCircle(renderer, cx, cy, radius, value);
 }
 
 void triangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, int y3, Color value)
 {
-    const int minY = std::min(y1, std::min(y2, y3));
-    const int maxY = std::max(y1, std::max(y2, y3));
-    color(renderer, value);
-    for (int y = minY; y <= maxY; ++y)
-    {
-        int intersections[3];
-        int count = 0;
-        const int xs[3] = {x1, x2, x3};
-        const int ys[3] = {y1, y2, y3};
-        for (int edge = 0; edge < 3; ++edge)
-        {
-            const int next = (edge + 1) % 3;
-            const int ya = ys[edge];
-            const int yb = ys[next];
-            if ((y >= ya && y < yb) || (y >= yb && y < ya))
-            {
-                const float t = static_cast<float>(y - ya) / static_cast<float>(yb - ya);
-                intersections[count++] = static_cast<int>(xs[edge] + (xs[next] - xs[edge]) * t);
-            }
-        }
-        if (count >= 2)
-        {
-            if (intersections[0] > intersections[1]) std::swap(intersections[0], intersections[1]);
-            SDL_RenderDrawLine(renderer, intersections[0], y, intersections[1], y);
-        }
-    }
+    (void)renderer;
+    gpu::triangle(static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(x2), static_cast<float>(y2),
+                  static_cast<float>(x3), static_cast<float>(y3), value.r, value.g, value.b, value.a);
 }
 
 void panel(SDL_Renderer* renderer, int x, int y, int w, int h, Color border, Color background)
@@ -218,9 +189,6 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
 {
     if (scale <= 0) return;
     if (centered) x -= textWidth(value, scale) / 2;
-    color(renderer, valueColor);
-    SDL_Rect blocks[256];
-    int blockCount = 0;
     for (unsigned index = 0; index < value.size(); ++index)
     {
         const Uint8* rows = glyph(value[index]);
@@ -229,18 +197,10 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
             for (int row = 0; row < 7; ++row)
                 for (int column = 0; column < 5; ++column)
                     if ((rows[row] & (1 << (4 - column))) != 0)
-                    {
-                        if (blockCount == 256)
-                        {
-                            SDL_RenderFillRects(renderer, blocks, blockCount);
-                            blockCount = 0;
-                        }
-                        blocks[blockCount++] = {x + column * scale, y + row * scale, scale, scale};
-                    }
+                        fillRect(renderer, x + column * scale, y + row * scale, scale, scale, valueColor);
         }
         x += 6 * scale;
     }
-    if (blockCount > 0) SDL_RenderFillRects(renderer, blocks, blockCount);
 }
 }
 }
