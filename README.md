@@ -1,15 +1,34 @@
-# PS4 Skeleton
+# Geometric Wars — PS4 nativo
 
-## Synopsis
+Esta é a recriação nativa do jogo que originalmente estava em `Boyceta-ps4` como HTML, CSS e JavaScript. O executável não abre o navegador do PS4: o jogo roda diretamente em C++ usando SDL-PS4 e OpenOrbis.
 
-A "base" package for those interested in creating homebrew with the [Open Orbis Toolchain]. It include functions that set up easy logging (via [libLog]), notifications (via [notifi]), jailbreaking capabilities (via sleirsgoevy's [libJbc]).
+## Primeira etapa jogável
 
-## Notes
+- menu principal nativo;
+- modo solo e cooperativo local para até quatro controles;
+- tela dividida para dois, três ou quatro jogadores;
+- movimento pelo analógico esquerdo e tiro automático no alvo mais próximo;
+- ondas, inimigos, moedas, prata, cura e upgrades;
+- habilidade de parar o tempo;
+- pausa, game over e retorno seguro ao menu;
+- chefe a cada cinco ondas, com três fases e quatro padrões possíveis;
+- pipeline do GitHub Actions que baixa e confere OpenOrbis v0.5.4 e SDL-PS4 v1.0 antes de gerar o PKG.
 
-- Be sure to change the PKG metadata in `Makefile` to something other than the default as to not conflict with other PKGs built upon this as a base.
+O diretório `Boyceta-ps4` permanece apenas como referência visual e de regras durante a conversão. Ele não é incluído no PKG nativo.
 
-[//]: #
-  [Open Orbis Toolchain]: <https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain>
-  [libLog]: <https://github.com/Al-Azif/ps4-libLog>
-  [notifi]: <https://github.com/Al-Azif/ps4-notifi>
-  [libJbc]: <https://github.com/sleirsgoevy/ps4-libjbc>
+## Controles
+
+- Analógico esquerdo: mover.
+- R2: parar o tempo.
+- L1: melhorar a velocidade do tiro.
+- R1: melhorar o dano.
+- Triângulo: melhorar a habilidade.
+- Options: pausar.
+- D-pad / X / O: navegar, confirmar e voltar nos menus.
+
+## Compilação
+
+O GitHub Actions prepara automaticamente as dependências e publica o arquivo `Geometric-Wars-Native.pkg` como artefato. Nenhum token é armazenado no projeto.
+
+Para compilar manualmente, defina `OO_PS4_TOOLCHAIN`, extraia o pacote SDL-PS4 em `third_party/SDL2` e execute `make` em Linux com clang e lld.
+

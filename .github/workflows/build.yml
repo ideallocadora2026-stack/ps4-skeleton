@@ -1,4 +1,4 @@
-name: Build Geometric Wars PS4 PKG
+name: Build Geometric Wars Native PS4 PKG
 
 on:
   push:
@@ -10,6 +10,9 @@ permissions:
 
 env:
   TOOLCHAIN_VERSION: v0.5.4
+  SDL_VERSION: v1.0
+  TOOLCHAIN_SHA256: 3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526
+  SDL_SHA256: 40491e19b2d2d594f812ba245d42b5f63753981811d4461b6dbf2a472c5c8f77
 
 jobs:
   build:
@@ -25,96 +28,95 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang lld curl jq ca-certificates make
+          sudo apt-get install -y clang lld curl ca-certificates make
 
-      - name: Download OpenOrbis Toolchain
+      - name: Download verified OpenOrbis Toolchain
         shell: bash
         run: |
           set -euo pipefail
-
-          release_api="https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/tags/${TOOLCHAIN_VERSION}"
-          asset_url="$(curl -fsSL "$release_api" | jq -r '.assets[] | select(.name | test("\\.(tar\\.gz|tgz)$"; "i")) | .browser_download_url' | head -n 1)"
-
-          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
-            echo "OpenOrbis ${TOOLCHAIN_VERSION}: pacote Linux nao encontrado."
-            exit 1
-          fi
-
           mkdir -p "$RUNNER_TEMP/openorbis"
-          curl -fL --retry 3 "$asset_url" -o "$RUNNER_TEMP/openorbis/toolchain.tar.gz"
+          curl -fL --retry 3 \
+            "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/${TOOLCHAIN_VERSION}/toolchain-llvm-18.tar.gz" \
+            -o "$RUNNER_TEMP/openorbis/toolchain.tar.gz"
+          echo "${TOOLCHAIN_SHA256}  $RUNNER_TEMP/openorbis/toolchain.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/openorbis/toolchain.tar.gz" -C "$RUNNER_TEMP/openorbis"
 
           create_fself="$(find "$RUNNER_TEMP/openorbis" -type f -path '*/bin/linux/create-fself' -print -quit)"
-          if [ -z "$create_fself" ]; then
-            echo "create-fself nao foi encontrado no pacote baixado."
-            exit 1
-          fi
-
+          test -n "$create_fself"
           toolchain_root="$(cd "$(dirname "$create_fself")/../.." && pwd)"
           echo "OO_PS4_TOOLCHAIN=$toolchain_root" >> "$GITHUB_ENV"
           chmod +x "$toolchain_root/bin/linux/"*
-
           test -x "$toolchain_root/bin/linux/create-fself"
           test -x "$toolchain_root/bin/linux/create-gp4"
           test -x "$toolchain_root/bin/linux/PkgTool.Core"
 
-      - name: Verify the original Boyceta game
+      - name: Download verified SDL-PS4
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p third_party/SDL2
+          curl -fL --retry 3 \
+            "https://github.com/OpenOrbis/SDL-PS4/releases/download/${SDL_VERSION}/SDL2.tar.gz" \
+            -o "$RUNNER_TEMP/SDL2.tar.gz"
+          echo "${SDL_SHA256}  $RUNNER_TEMP/SDL2.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/SDL2.tar.gz" -C third_party/SDL2
+          test -s third_party/SDL2/include/SDL2/SDL.h
+          test -s third_party/SDL2/lib/libSDL2.a
+
+      - name: Verify native project inputs
         shell: bash
         run: |
           set -euo pipefail
           test -s src/main.cpp
-          test -s Boyceta-ps4/index.html
-          test -s Boyceta-ps4/style.css
-          test -s Boyceta-ps4/script.js
-          node --check Boyceta-ps4/script.js
+          test -s src/game.cpp
+          test -s src/draw.cpp
           test -s sce_sys/icon0.png
           test -s sce_sys/pic0.png
           test -s sce_sys/pic1.png
+          test -s sce_sys/about/right.sprx
           test -s sce_module/libc.prx
           test -s sce_module/libSceFios2.prx
+          if grep -R "LaunchWebBrowser\|127.0.0.1:8088\|index.html" src; then
+            echo "O executavel ainda contem codigo do navegador."
+            exit 1
+          fi
 
-      - name: Prepare required OpenOrbis module
-        shell: bash
-        run: |
-          set -euo pipefail
-          make sce_sys/about/right.sprx
-
-      - name: Build eboot, GP4 and PKG
+      - name: Build native eboot and PKG
         shell: bash
         run: |
           set -euo pipefail
           make all
-          grep -q 'index.html' pkg.gp4
-          grep -q 'style.css' pkg.gp4
-          grep -q 'script.js' pkg.gp4
+          test -s eboot.bin
+          test -s IV0000-GEOM00001_00-GEOMETRICWARS000.pkg
+          if grep -q "index.html\|script.js\|style.css" pkg.gp4; then
+            echo "O PKG nativo nao deve empacotar o jogo web."
+            exit 1
+          fi
 
       - name: Validate generated PKG
         shell: bash
         run: |
           set -euo pipefail
           pkg_file="IV0000-GEOM00001_00-GEOMETRICWARS000.pkg"
-          test -s "$pkg_file"
           "$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core" pkg_validate --verbose "$pkg_file"
 
-      - name: Collect and verify result
+      - name: Collect result
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output
-          pkg_file="IV0000-GEOM00001_00-GEOMETRICWARS000.pkg"
-          test -s "$pkg_file"
-          cp "$pkg_file" output/Geometric-Wars.pkg
-          sha256sum output/Geometric-Wars.pkg > output/Geometric-Wars.pkg.sha256
-          ls -lh output/Geometric-Wars.pkg
-          cat output/Geometric-Wars.pkg.sha256
+          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Native.pkg
+          sha256sum output/Geometric-Wars-Native.pkg > output/Geometric-Wars-Native.pkg.sha256
+          ls -lh output/Geometric-Wars-Native.pkg
+          cat output/Geometric-Wars-Native.pkg.sha256
 
-      - name: Upload final PKG
+      - name: Upload native PS4 package
         uses: actions/upload-artifact@v4
         with:
-          name: Geometric-Wars-PS4
+          name: Geometric-Wars-Native-PS4
           path: |
-            output/Geometric-Wars.pkg
-            output/Geometric-Wars.pkg.sha256
+            output/Geometric-Wars-Native.pkg
+            output/Geometric-Wars-Native.pkg.sha256
           if-no-files-found: error
           retention-days: 30
 

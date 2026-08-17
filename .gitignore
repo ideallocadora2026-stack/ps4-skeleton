@@ -10,7 +10,10 @@ project.log
 
 # Build artifacts
 build
+third_party
+output
 sce_sys/param.sfo
 eboot.bin
 pkg.gp4
 *.pkg
+

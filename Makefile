@@ -1,66 +1,70 @@
 TITLE      := Geometric Wars
-VERSION    := 1.02
+VERSION    := 1.10
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
+SDL_ROOT  ?= third_party/SDL2
 INTDIR    := build
 CDIR      := linux
 
 CCX := clang++
 LD  := ld.lld
 
-LIBS       := -lc -lkernel -lc++ -lSceSystemService
-LIBMODULES := $(wildcard sce_module/*)
-WEB_ASSETS := index.html style.css script.js
-SYSTEM_ART := sce_sys/icon0.png sce_sys/pic0.png sce_sys/pic1.png
-CXXFLAGS   := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c \
-	-isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include \
-	-isystem $(TOOLCHAIN)/include/c++/v1
-LDFLAGS    := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
-	-L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
+CPPFILES := $(wildcard src/*.cpp)
+OBJS     := $(patsubst src/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
+
+LIBS := -lSDL2 -lc -lm -lkernel -lc++ \
+	-lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
+	-lSceSysmodule -lSceFreeType -lSceSystemService
+
+CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -O2 -fPIC \
+	-funwind-tables -c -isysroot $(TOOLCHAIN) \
+	-isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1 \
+	-I$(SDL_ROOT)/include -Isrc
+
+LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x \
+	--eh-frame-hdr -L$(SDL_ROOT)/lib -L$(TOOLCHAIN)/lib \
+	$(LIBS) $(TOOLCHAIN)/lib/crt1.o
 
 TOOLS := $(TOOLCHAIN)/bin/$(CDIR)
 
-.PHONY: all clean check-toolchain
+PKG_FILES := eboot.bin \
+	sce_sys/about/right.sprx \
+	sce_sys/param.sfo \
+	sce_sys/icon0.png \
+	sce_sys/pic0.png \
+	sce_sys/pic1.png \
+	sce_module/libc.prx \
+	sce_module/libSceFios2.prx
 
-all: check-toolchain $(CONTENT_ID).pkg
+.PHONY: all clean check-toolchain check-sdl
+
+all: check-toolchain check-sdl $(CONTENT_ID).pkg
 
 check-toolchain:
 	@test -n "$(TOOLCHAIN)" || (echo "Defina OO_PS4_TOOLCHAIN." && exit 1)
 	@test -x "$(TOOLS)/create-fself"
 	@test -x "$(TOOLS)/create-gp4"
 	@test -x "$(TOOLS)/PkgTool.Core"
+	@test -s "$(TOOLCHAIN)/lib/crt1.o"
+
+check-sdl:
+	@test -s "$(SDL_ROOT)/include/SDL2/SDL.h" || (echo "SDL2 headers nao encontrados em $(SDL_ROOT)." && exit 1)
+	@test -s "$(SDL_ROOT)/lib/libSDL2.a" || (echo "libSDL2.a nao encontrada em $(SDL_ROOT)." && exit 1)
 
 $(INTDIR):
 	mkdir -p $@
 
-$(INTDIR)/main.o: src/main.cpp | $(INTDIR)
+$(INTDIR)/%.o: src/%.cpp | $(INTDIR)
 	$(CCX) $(CXXFLAGS) -o $@ $<
 
-$(INTDIR)/GeometricWars.elf: $(INTDIR)/main.o
+$(INTDIR)/GeometricWars.elf: $(OBJS)
 	$(LD) $^ -o $@ $(LDFLAGS)
-
-index.html: Boyceta-ps4/index.html
-	cp $< $@
-
-style.css: Boyceta-ps4/style.css
-	cp $< $@
-
-script.js: Boyceta-ps4/script.js
-	cp $< $@
 
 eboot.bin: $(INTDIR)/GeometricWars.elf
 	$(TOOLS)/create-fself -in=$< -out=$(INTDIR)/GeometricWars.oelf \
 		--eboot "$@" --paid 0x3800000000000011
-
-sce_sys/about/right.sprx:
-	@mkdir -p sce_sys/about
-	@source_file="$$(find "$(TOOLCHAIN)/samples" -type f -path '*/sce_sys/about/right.sprx' -print -quit)"; \
-	if [ -z "$$source_file" ]; then \
-		echo "right.sprx nao foi encontrado nos samples do OpenOrbis."; exit 1; \
-	fi; \
-	cp "$$source_file" "$@"
 
 sce_sys/param.sfo: Makefile
 	mkdir -p sce_sys
@@ -77,7 +81,7 @@ sce_sys/param.sfo: Makefile
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
 	$(TOOLS)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'
 
-pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo $(SYSTEM_ART) $(LIBMODULES) $(WEB_ASSETS)
+pkg.gp4: $(PKG_FILES)
 	$(TOOLS)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
 
 $(CONTENT_ID).pkg: pkg.gp4
@@ -85,5 +89,5 @@ $(CONTENT_ID).pkg: pkg.gp4
 	@test -s $@
 
 clean:
-	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(WEB_ASSETS) $(CONTENT_ID).pkg
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg output
 
