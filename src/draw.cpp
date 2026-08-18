@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <emmintrin.h>
 
 namespace gw
@@ -138,6 +139,7 @@ void blendSpan(int y, int x1, int x2, Color value)
     const __m128i sourceAlpha = _mm_set1_epi16(static_cast<short>(alpha));
     const __m128i destinationAlpha = _mm_set1_epi16(static_cast<short>(inverse));
     const __m128i rounding = _mm_set1_epi16(128);
+    const __m128i weightedSource = _mm_mullo_epi16(source, sourceAlpha);
 
     int index = 0;
     for (; index + 4 <= count; index += 4)
@@ -146,8 +148,8 @@ void blendSpan(int y, int x1, int x2, Color value)
         __m128i low = _mm_unpacklo_epi8(bytes, zero);
         __m128i high = _mm_unpackhi_epi8(bytes, zero);
 
-        low = _mm_add_epi16(_mm_mullo_epi16(source, sourceAlpha), _mm_mullo_epi16(low, destinationAlpha));
-        high = _mm_add_epi16(_mm_mullo_epi16(source, sourceAlpha), _mm_mullo_epi16(high, destinationAlpha));
+        low = _mm_add_epi16(weightedSource, _mm_mullo_epi16(low, destinationAlpha));
+        high = _mm_add_epi16(weightedSource, _mm_mullo_epi16(high, destinationAlpha));
         low = _mm_add_epi16(low, rounding);
         high = _mm_add_epi16(high, rounding);
         low = _mm_add_epi16(low, _mm_srli_epi16(low, 8));
@@ -164,6 +166,45 @@ void blendSpan(int y, int x1, int x2, Color value)
         const int green = blendedChannel(value.g, (old & greenMask) >> greenShift, alpha);
         const int blue = blendedChannel(value.b, (old & blueMask) >> blueShift, alpha);
         destination[index] = packed({static_cast<Uint8>(red), static_cast<Uint8>(green), static_cast<Uint8>(blue), 255});
+    }
+}
+
+void blendConvexQuad(const int* xs, const int* ys, Color value)
+{
+    int minimumY = ys[0];
+    int maximumY = ys[0];
+    for (int point = 1; point < 4; ++point)
+    {
+        minimumY = std::min(minimumY, ys[point]);
+        maximumY = std::max(maximumY, ys[point]);
+    }
+    minimumY = std::max(minimumY, clipTop);
+    maximumY = std::min(maximumY, clipBottom - 1);
+
+    for (int y = minimumY; y <= maximumY; ++y)
+    {
+        float intersections[4];
+        int count = 0;
+        for (int edge = 0; edge < 4; ++edge)
+        {
+            const int next = (edge + 1) & 3;
+            const int firstY = ys[edge];
+            const int secondY = ys[next];
+            if ((y >= firstY && y < secondY) || (y >= secondY && y < firstY))
+            {
+                const float amount = static_cast<float>(y - firstY) / static_cast<float>(secondY - firstY);
+                intersections[count++] = xs[edge] + (xs[next] - xs[edge]) * amount;
+            }
+        }
+        if (count < 2) continue;
+        float left = intersections[0];
+        float right = intersections[0];
+        for (int index = 1; index < count; ++index)
+        {
+            left = std::min(left, intersections[index]);
+            right = std::max(right, intersections[index]);
+        }
+        blendSpan(y, static_cast<int>(std::floor(left)), static_cast<int>(std::ceil(right)) + 1, value);
     }
 }
 
@@ -252,6 +293,25 @@ bool present()
     return pixels != nullptr;
 }
 
+bool captureFrame(std::vector<uint32_t>& destination)
+{
+    if (!pixels || surfaceWidth <= 0 || surfaceHeight <= 0) return false;
+    destination.resize(static_cast<size_t>(surfaceWidth) * surfaceHeight);
+    for (int row = 0; row < surfaceHeight; ++row)
+        std::memcpy(&destination[static_cast<size_t>(row) * surfaceWidth], pixels + row * pitchPixels,
+                    static_cast<size_t>(surfaceWidth) * sizeof(uint32_t));
+    return true;
+}
+
+bool restoreFrame(const std::vector<uint32_t>& source)
+{
+    if (!pixels || source.size() != static_cast<size_t>(surfaceWidth) * surfaceHeight) return false;
+    for (int row = 0; row < surfaceHeight; ++row)
+        std::memcpy(pixels + row * pitchPixels, &source[static_cast<size_t>(row) * surfaceWidth],
+                    static_cast<size_t>(surfaceWidth) * sizeof(uint32_t));
+    return true;
+}
+
 void setClipRect(int x, int y, int w, int h)
 {
     clipLeft = std::max(0, x);
@@ -314,6 +374,33 @@ void line(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, Color value, i
     if (steps == 0)
     {
         fillRect(renderer, x1 - half, y1 - half, size, size, value);
+        return;
+    }
+    if (size > 1)
+    {
+        const float length = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+        const float tangentX = dx / length;
+        const float tangentY = dy / length;
+        const float normalX = -tangentY;
+        const float normalY = tangentX;
+        const float half = size * 0.5f;
+        const float startX = x1 - tangentX * half;
+        const float startY = y1 - tangentY * half;
+        const float endX = x2 + tangentX * half;
+        const float endY = y2 + tangentY * half;
+        const int xs[4] = {
+            static_cast<int>(std::round(startX + normalX * half)),
+            static_cast<int>(std::round(startX - normalX * half)),
+            static_cast<int>(std::round(endX - normalX * half)),
+            static_cast<int>(std::round(endX + normalX * half))
+        };
+        const int ys[4] = {
+            static_cast<int>(std::round(startY + normalY * half)),
+            static_cast<int>(std::round(startY - normalY * half)),
+            static_cast<int>(std::round(endY - normalY * half)),
+            static_cast<int>(std::round(endY + normalY * half))
+        };
+        blendConvexQuad(xs, ys, value);
         return;
     }
     const float stepX = static_cast<float>(dx) / steps;

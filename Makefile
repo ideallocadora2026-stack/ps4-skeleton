@@ -1,5 +1,5 @@
 TITLE      := Geometric Wars
-VERSION    := 1.20
+VERSION    := 1.21
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
@@ -18,7 +18,8 @@ LIBS := -lSDL2 -lc -lm -lkernel -lc++ \
 	-lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
 	-lSceSysmodule -lSceSystemService
 
-CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O2 -fPIC \
+CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++14 -D_GNU_SOURCE -O3 -ffast-math \
+	-march=btver2 -fno-exceptions -fno-rtti -fPIC \
 	-funwind-tables -c -isysroot $(TOOLCHAIN) \
 	-isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1 \
 	-I$(SDL_ROOT)/include -Isrc

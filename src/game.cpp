@@ -553,7 +553,9 @@ struct Game::Impl
           shopTab(ShopTab::Skins), controlIndex(0), bindingAction(-1), noticeTimer(0),
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
           menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
-          musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false)
+          musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false),
+          backdropCacheQuality(-1), playingCacheQuality(-1), playingCacheLayout(-1),
+          playingCacheDriftX(1000000), playingCacheDriftY(1000000)
     {
         std::memset(&boss, 0, sizeof(boss));
         std::memset(nativePadHandles, -1, sizeof(nativePadHandles));
@@ -634,6 +636,13 @@ struct Game::Impl
     float musicVolume;
     float soundVolume;
     bool coinSoundAlternate;
+    std::vector<uint32_t> backdropCache;
+    int backdropCacheQuality;
+    std::vector<uint32_t> playingBackgroundCache;
+    int playingCacheQuality;
+    int playingCacheLayout;
+    int playingCacheDriftX;
+    int playingCacheDriftY;
 
     std::vector<Projectile> projectiles;
     std::vector<Projectile> enemyProjectiles;
@@ -712,6 +721,8 @@ struct Game::Impl
     void renderGameOver();
     void renderPause();
     void renderPlaying();
+    void paintViewportBase(const Viewport& viewport, int driftX, int driftY);
+    void preparePlayingBackground();
     void renderViewport(const Viewport& viewport, const Player& cameraPlayer, int playerIndex);
     void renderWorldEntityCircle(const Viewport& viewport, const Player& cameraPlayer, float x, float y, float radius, Color color, int glow);
     Vec2 toScreen(const Viewport& viewport, const Player& cameraPlayer, float x, float y) const;
@@ -902,9 +913,7 @@ int Game::Impl::qualityParticleLimit() const
 
 int Game::Impl::targetFps() const
 {
-    if (graphicsQuality == GraphicsQuality::High) return 60;
-    if (graphicsQuality == GraphicsQuality::Medium) return 90;
-    return 120;
+    return 60;
 }
 
 bool Game::Impl::initialize()
@@ -3297,16 +3306,26 @@ void Game::Impl::renderWorldEntityCircle(const Viewport& viewport, const Player&
 
 void Game::Impl::renderBackdrop()
 {
-    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, BG);
-    const float time = lastTick / 1000.0f;
-    const int bandCount = graphicsQuality == GraphicsQuality::High ? 8 : (graphicsQuality == GraphicsQuality::Medium ? 5 : 3);
-    for (int band = 0; band < bandCount; ++band)
+    const int quality = static_cast<int>(graphicsQuality);
+    bool restored = false;
+    if (backdropCacheQuality == quality)
+        restored = draw::restoreFrame(backdropCache);
+
+    if (!restored)
     {
-        const int margin = band * 90;
-        draw::fillRect(renderer, margin, margin / 2, SCREEN_W - margin * 2, SCREEN_H - margin, {4, static_cast<Uint8>(8 + band), static_cast<Uint8>(20 + band * 3), 30});
+        draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, BG);
+        const int bandCount = graphicsQuality == GraphicsQuality::High ? 8 : (graphicsQuality == GraphicsQuality::Medium ? 5 : 3);
+        for (int band = 0; band < bandCount; ++band)
+        {
+            const int margin = band * 90;
+            draw::fillRect(renderer, margin, margin / 2, SCREEN_W - margin * 2, SCREEN_H - margin, {4, static_cast<Uint8>(8 + band), static_cast<Uint8>(20 + band * 3), 30});
+        }
+        for (int x = 0; x < SCREEN_W; x += 80) draw::line(renderer, x, 0, x, SCREEN_H, {0, 120, 210, 9});
+        for (int y = 0; y < SCREEN_H; y += 80) draw::line(renderer, 0, y, SCREEN_W, y, {0, 120, 210, 9});
+        if (draw::captureFrame(backdropCache)) backdropCacheQuality = quality;
     }
-    for (int x = 0; x < SCREEN_W; x += 80) draw::line(renderer, x, 0, x, SCREEN_H, {0, 120, 210, 9});
-    for (int y = 0; y < SCREEN_H; y += 80) draw::line(renderer, 0, y, SCREEN_W, y, {0, 120, 210, 9});
+
+    const float time = lastTick / 1000.0f;
     const int stars = qualityStars();
     for (int i = 0; i < stars; ++i)
     {
@@ -3442,7 +3461,7 @@ void Game::Impl::renderControls()
         draw::text(renderer, labels[i], 535, y, i == 1 || i == 4 || i == 5 || i == 6 ? 2 : 3, i == controlIndex ? WHITE : MUTED);
         std::string value;
         if (i < ActionCount) value = bindingAction == i ? "PRESSIONE UM BOTAO..." : buttonName(config.keys[i]);
-        else if (i == 7) value = graphicsQuality == GraphicsQuality::High ? "ALTO 60 FPS" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO 90 FPS" : "BAIXO 120 FPS");
+        else if (i == 7) value = graphicsQuality == GraphicsQuality::High ? "ALTO 60 FPS" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO 60 FPS" : "BAIXO 60 FPS");
         else if (i == 8) value = oneDecimal(config.sensitivity) + "X";
         else if (i == 9) value = number(static_cast<int>(config.rumble * 100.0f + 0.5f)) + "%";
         else if (i == 10) value = number(static_cast<int>(musicVolume * 100.0f + 0.5f)) + "%";
@@ -4044,20 +4063,65 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
     }
 }
 
-void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPlayer, int playerIndex)
+void Game::Impl::paintViewportBase(const Viewport& viewport, int driftX, int driftY)
 {
     draw::setClipRect(viewport.x, viewport.y, viewport.w, viewport.h);
     draw::fillRect(renderer, viewport.x, viewport.y, viewport.w, viewport.h, BG_BLUE);
-
-    const float backgroundTime = lastTick / 1000.0f;
     if (graphicsQuality == GraphicsQuality::High)
     {
-        const int driftX = static_cast<int>(std::sin(backgroundTime * 0.12f) * 35.0f);
-        const int driftY = static_cast<int>(std::cos(backgroundTime * 0.09f) * 25.0f);
         draw::fillRect(renderer, viewport.x + viewport.w / 12 + driftX, viewport.y + viewport.h * 2 / 3 + driftY, viewport.w * 2 / 3, viewport.h / 4, {70, 20, 170, 18});
         draw::fillRect(renderer, viewport.x + viewport.w / 2 - driftX, viewport.y + viewport.h / 10 - driftY, viewport.w / 2, viewport.h / 4, {0, 120, 200, 13});
         draw::fillRect(renderer, viewport.x + viewport.w / 3, viewport.y + viewport.h / 3, viewport.w / 3, viewport.h / 3, {180, 0, 100, 9});
     }
+    draw::clearClipRect();
+}
+
+void Game::Impl::preparePlayingBackground()
+{
+    const int quality = static_cast<int>(graphicsQuality);
+    const int layout = std::max(1, std::min(4, playerCount));
+    const float backgroundTime = lastTick / 1000.0f;
+    const int driftX = graphicsQuality == GraphicsQuality::High ? static_cast<int>(std::sin(backgroundTime * 0.12f) * 35.0f) : 0;
+    const int driftY = graphicsQuality == GraphicsQuality::High ? static_cast<int>(std::cos(backgroundTime * 0.09f) * 25.0f) : 0;
+
+    if (playingCacheQuality == quality && playingCacheLayout == layout &&
+        playingCacheDriftX == driftX && playingCacheDriftY == driftY &&
+        draw::restoreFrame(playingBackgroundCache))
+        return;
+
+    draw::clearClipRect();
+    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, BG);
+    if (layout == 1)
+        paintViewportBase({0, 0, SCREEN_W, SCREEN_H}, driftX, driftY);
+    else if (layout == 2)
+    {
+        paintViewportBase({0, 0, SCREEN_W / 2, SCREEN_H}, driftX, driftY);
+        paintViewportBase({SCREEN_W / 2, 0, SCREEN_W / 2, SCREEN_H}, driftX, driftY);
+    }
+    else
+    {
+        const int halfW = SCREEN_W / 2;
+        const int halfH = SCREEN_H / 2;
+        paintViewportBase({0, 0, halfW, halfH}, driftX, driftY);
+        paintViewportBase({halfW, 0, halfW, halfH}, driftX, driftY);
+        paintViewportBase({0, halfH, halfW, halfH}, driftX, driftY);
+        if (layout == 4) paintViewportBase({halfW, halfH, halfW, halfH}, driftX, driftY);
+    }
+    draw::clearClipRect();
+    if (draw::captureFrame(playingBackgroundCache))
+    {
+        playingCacheQuality = quality;
+        playingCacheLayout = layout;
+        playingCacheDriftX = driftX;
+        playingCacheDriftY = driftY;
+    }
+}
+
+void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPlayer, int playerIndex)
+{
+    draw::setClipRect(viewport.x, viewport.y, viewport.w, viewport.h);
+
+    const float backgroundTime = lastTick / 1000.0f;
     const int stars = qualityStars();
     for (int i = 0; i < stars; ++i)
     {
@@ -4221,7 +4285,7 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
 
 void Game::Impl::renderPlaying()
 {
-    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, BG);
+    preparePlayingBackground();
     if (playerCount == 1)
         renderViewport({0, 0, SCREEN_W, SCREEN_H}, players[0], 0);
     else if (playerCount == 2)
@@ -4238,7 +4302,6 @@ void Game::Impl::renderPlaying()
         renderViewport({halfW, 0, halfW, halfH}, players[1], 1);
         renderViewport({0, halfH, halfW, halfH}, players[2], 2);
         if (playerCount >= 4) renderViewport({halfW, halfH, halfW, halfH}, players[3], 3);
-        else draw::fillRect(renderer, halfW, halfH, halfW, halfH, BG);
         draw::line(renderer, halfW, 0, halfW, SCREEN_H, withAlpha(WHITE, 70), 3);
         draw::line(renderer, 0, halfH, SCREEN_W, halfH, withAlpha(WHITE, 70), 3);
     }

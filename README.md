@@ -17,6 +17,7 @@ Esta é a recriação nativa do jogo que originalmente estava em `Boyceta-ps4` c
 - músicas gerais, música exclusiva de chefe e música da loja;
 - efeitos na TV e no alto-falante de cada controle;
 - volumes de música e efeitos ajustáveis e salvos no perfil;
+- apresentação estabilizada em 60 FPS nos três níveis de qualidade, com cache de fundos 1080p e rasterização otimizada de lasers e linhas grossas;
 - pipeline do GitHub Actions que baixa e confere OpenOrbis v0.5.4 e SDL-PS4 v1.0 antes de gerar o PKG.
 
 O diretório `Boyceta-ps4` permanece apenas como referência visual e de regras durante a conversão. Ele não é incluído no PKG nativo.

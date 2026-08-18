@@ -2,7 +2,9 @@
 
 #include <SDL2/SDL.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace gw
 {
@@ -20,6 +22,8 @@ bool initialize(SDL_Surface* surface);
 void shutdown();
 void beginFrame();
 bool present();
+bool captureFrame(std::vector<uint32_t>& destination);
+bool restoreFrame(const std::vector<uint32_t>& source);
 void setThinText(bool enabled);
 void setClipRect(int x, int y, int w, int h);
 void clearClipRect();
