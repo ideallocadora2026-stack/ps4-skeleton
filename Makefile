@@ -29,7 +29,11 @@ LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x \
 
 TOOLS := $(TOOLCHAIN)/bin/$(CDIR)
 
-AUDIO_FILES := $(shell find assets/audio -type f 2>/dev/null)
+AUDIO_PACKAGE_FILES := \
+	music_general_1.mp3 music_general_2.mp3 music_general_3.mp3 \
+	music_general_4.mp3 music_general_5.mp3 music_boss.mp3 music_shop.mp3 \
+	sfx_coin_1.mp3 sfx_coin_2.mp3 sfx_grenade.mp3 \
+	sfx_boss_destroyed.mp3 sfx_player_damage.mp3 sfx_heart.mp3
 
 PKG_FILES := eboot.bin \
 	sce_sys/about/right.sprx \
@@ -39,7 +43,7 @@ PKG_FILES := eboot.bin \
 	sce_sys/pic1.png \
 	sce_module/libc.prx \
 	sce_module/libSceFios2.prx \
-	$(AUDIO_FILES)
+	$(AUDIO_PACKAGE_FILES)
 
 .PHONY: all clean check-toolchain check-sdl
 
@@ -69,6 +73,35 @@ eboot.bin: $(INTDIR)/GeometricWars.elf
 	$(TOOLS)/create-fself -in=$< -out=$(INTDIR)/GeometricWars.oelf \
 		--eboot "$@" --paid 0x3800000000000011
 
+# LibOrbisPkg does not reliably build arbitrary deeply nested directories.
+# Keep the source library organized, then stage the same MP3 bytes at package root.
+music_general_1.mp3: assets/audio/music/general_1.mp3
+	cp $< $@
+music_general_2.mp3: assets/audio/music/general_2.mp3
+	cp $< $@
+music_general_3.mp3: assets/audio/music/general_3.mp3
+	cp $< $@
+music_general_4.mp3: assets/audio/music/general_4.mp3
+	cp $< $@
+music_general_5.mp3: assets/audio/music/general_5.mp3
+	cp $< $@
+music_boss.mp3: assets/audio/music/boss.mp3
+	cp $< $@
+music_shop.mp3: assets/audio/music/shop.mp3
+	cp $< $@
+sfx_coin_1.mp3: assets/audio/sfx/coin_1.mp3
+	cp $< $@
+sfx_coin_2.mp3: assets/audio/sfx/coin_2.mp3
+	cp $< $@
+sfx_grenade.mp3: assets/audio/sfx/grenade.mp3
+	cp $< $@
+sfx_boss_destroyed.mp3: assets/audio/sfx/boss_destroyed.mp3
+	cp $< $@
+sfx_player_damage.mp3: assets/audio/sfx/player_damage.mp3
+	cp $< $@
+sfx_heart.mp3: assets/audio/sfx/heart.mp3
+	cp $< $@
+
 sce_sys/param.sfo: Makefile
 	mkdir -p sce_sys
 	rm -f $@
@@ -92,4 +125,5 @@ $(CONTENT_ID).pkg: pkg.gp4
 	@test -s $@
 
 clean:
-	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg output
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg output \
+		$(AUDIO_PACKAGE_FILES)

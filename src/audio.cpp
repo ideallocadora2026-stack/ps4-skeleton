@@ -23,21 +23,21 @@ const int OUTPUT_RATE = 48000;
 const int BUFFER_FRAMES = 768;
 const int PAD_SPEAKER_PORT = 4;
 const char* GENERAL_TRACKS[5] = {
-    "/app0/assets/audio/music/general_1.mp3",
-    "/app0/assets/audio/music/general_2.mp3",
-    "/app0/assets/audio/music/general_3.mp3",
-    "/app0/assets/audio/music/general_4.mp3",
-    "/app0/assets/audio/music/general_5.mp3"
+    "/app0/music_general_1.mp3",
+    "/app0/music_general_2.mp3",
+    "/app0/music_general_3.mp3",
+    "/app0/music_general_4.mp3",
+    "/app0/music_general_5.mp3"
 };
-const char* BOSS_TRACK = "/app0/assets/audio/music/boss.mp3";
-const char* SHOP_TRACK = "/app0/assets/audio/music/shop.mp3";
+const char* BOSS_TRACK = "/app0/music_boss.mp3";
+const char* SHOP_TRACK = "/app0/music_shop.mp3";
 const char* EFFECT_FILES[static_cast<int>(SoundEffect::Count)] = {
-    "/app0/assets/audio/sfx/coin_1.mp3",
-    "/app0/assets/audio/sfx/coin_2.mp3",
-    "/app0/assets/audio/sfx/grenade.mp3",
-    "/app0/assets/audio/sfx/boss_destroyed.mp3",
-    "/app0/assets/audio/sfx/player_damage.mp3",
-    "/app0/assets/audio/sfx/heart.mp3"
+    "/app0/sfx_coin_1.mp3",
+    "/app0/sfx_coin_2.mp3",
+    "/app0/sfx_grenade.mp3",
+    "/app0/sfx_boss_destroyed.mp3",
+    "/app0/sfx_player_damage.mp3",
+    "/app0/sfx_heart.mp3"
 };
 
 float clampSample(float value)
