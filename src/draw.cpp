@@ -89,6 +89,7 @@ int clipTop = 0;
 int clipRight = 0;
 int clipBottom = 0;
 bool surfaceLocked = false;
+bool thinText = false;
 uint32_t redMask = 0;
 uint32_t greenMask = 0;
 uint32_t blueMask = 0;
@@ -188,6 +189,11 @@ void blendRing(int cx, int cy, int innerRadius, int outerRadius, Color value)
 
 namespace draw
 {
+void setThinText(bool enabled)
+{
+    thinText = enabled;
+}
+
 bool initialize(SDL_Surface* surface)
 {
     if (!surface || !surface->pixels || !surface->format || surface->format->BytesPerPixel != 4 || !surface->format->Rmask || !surface->format->Gmask || !surface->format->Bmask) return false;
@@ -438,14 +444,16 @@ void panel(SDL_Renderer* renderer, int x, int y, int w, int h, Color border, Col
 int textWidth(const std::string& value, int scale)
 {
     if (value.empty()) return 0;
-    return static_cast<int>(value.size()) * 6 * scale - scale;
+    const int cellScale = thinText && scale == 1 ? 2 : scale;
+    return static_cast<int>(value.size()) * 6 * cellScale - cellScale;
 }
 
 void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int scale, Color valueColor, bool centered)
 {
     if (scale <= 0) return;
     if (centered) x -= textWidth(value, scale) / 2;
-    const int glyphSize = scale == 1 ? 2 : scale;
+    const int cellScale = thinText && scale == 1 ? 2 : scale;
+    const int glyphSize = scale == 1 ? 2 : cellScale;
     const int baseX = x;
     const auto paint = [&](int offsetX, int offsetY, Color paintColor)
     {
@@ -458,12 +466,12 @@ void text(SDL_Renderer* renderer, const std::string& value, int x, int y, int sc
                 for (int row = 0; row < 7; ++row)
                     for (int column = 0; column < 5; ++column)
                         if ((rows[row] & (1 << (4 - column))) != 0)
-                            fillRect(renderer, penX + column * scale, y + offsetY + row * scale, glyphSize, glyphSize, paintColor);
+                            fillRect(renderer, penX + column * cellScale, y + offsetY + row * cellScale, glyphSize, glyphSize, paintColor);
             }
-            penX += 6 * scale;
+            penX += 6 * cellScale;
         }
     };
-    paint(std::max(1, scale / 2), std::max(1, scale / 2), {0, 0, 0, static_cast<Uint8>(std::min(190, static_cast<int>(valueColor.a)))});
+    paint(std::max(1, cellScale / 2), std::max(1, cellScale / 2), {0, 0, 0, static_cast<Uint8>(std::min(190, static_cast<int>(valueColor.a)))});
     paint(0, 0, valueColor);
 }
 }

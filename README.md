@@ -2,7 +2,7 @@
 
 Esta é a recriação nativa do jogo que originalmente estava em `Boyceta-ps4` como HTML, CSS e JavaScript. O executável não abre o navegador do PS4: o jogo roda diretamente em C++ usando SDL-PS4 e OpenOrbis.
 
-## Primeira etapa jogável
+## Versão nativa atual
 
 - menu principal nativo;
 - modo solo e cooperativo local para até quatro controles;
@@ -11,7 +11,12 @@ Esta é a recriação nativa do jogo que originalmente estava em `Boyceta-ps4` c
 - ondas, inimigos, moedas, prata, cura e upgrades;
 - habilidade de parar o tempo;
 - pausa, game over e retorno seguro ao menu;
-- chefe a cada cinco ondas, com três fases e quatro padrões possíveis;
+- chefe aleatório a cada cinco ondas, com três fases e seis padrões possíveis;
+- formas dos inimigos alteradas pelo último chefe derrotado;
+- granadas compráveis e lançáveis, com os dois botões remapeáveis;
+- músicas gerais, música exclusiva de chefe e música da loja;
+- efeitos na TV e no alto-falante de cada controle;
+- volumes de música e efeitos ajustáveis e salvos no perfil;
 - pipeline do GitHub Actions que baixa e confere OpenOrbis v0.5.4 e SDL-PS4 v1.0 antes de gerar o PKG.
 
 O diretório `Boyceta-ps4` permanece apenas como referência visual e de regras durante a conversão. Ele não é incluído no PKG nativo.
@@ -23,8 +28,12 @@ O diretório `Boyceta-ps4` permanece apenas como referência visual e de regras 
 - L1: melhorar a velocidade do tiro.
 - R1: melhorar o dano.
 - Triângulo: melhorar a habilidade.
+- Quadrado: comprar uma granada por 50 G.
+- L2: lançar a granada.
 - Options: pausar.
 - D-pad / X / O: navegar, confirmar e voltar nos menus.
+
+Todos esses botões podem ser remapeados na tela de controles.
 
 ## Compilação
 

@@ -20,6 +20,7 @@ bool initialize(SDL_Surface* surface);
 void shutdown();
 void beginFrame();
 bool present();
+void setThinText(bool enabled);
 void setClipRect(int x, int y, int w, int h);
 void clearClipRect();
 void color(SDL_Renderer* renderer, Color value);

@@ -1,5 +1,5 @@
 TITLE      := Geometric Wars
-VERSION    := 1.19
+VERSION    := 1.20
 TITLE_ID   := GEOM00001
 CONTENT_ID := IV0000-GEOM00001_00-GEOMETRICWARS000
 
@@ -29,6 +29,8 @@ LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x \
 
 TOOLS := $(TOOLCHAIN)/bin/$(CDIR)
 
+AUDIO_FILES := $(shell find assets/audio -type f 2>/dev/null)
+
 PKG_FILES := eboot.bin \
 	sce_sys/about/right.sprx \
 	sce_sys/param.sfo \
@@ -36,7 +38,8 @@ PKG_FILES := eboot.bin \
 	sce_sys/pic0.png \
 	sce_sys/pic1.png \
 	sce_module/libc.prx \
-	sce_module/libSceFios2.prx
+	sce_module/libSceFios2.prx \
+	$(AUDIO_FILES)
 
 .PHONY: all clean check-toolchain check-sdl
 

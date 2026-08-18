@@ -57,6 +57,13 @@ jobs:
           test -s src/main.cpp
           test -s src/game.cpp
           test -s src/draw.cpp
+          test -s src/audio.cpp
+          test -s src/third_party/dr_mp3.h
+          for file in assets/audio/music/general_{1..5}.mp3 assets/audio/music/boss.mp3 assets/audio/music/shop.mp3 \
+                      assets/audio/sfx/coin_{1,2}.mp3 assets/audio/sfx/grenade.mp3 assets/audio/sfx/boss_destroyed.mp3 \
+                      assets/audio/sfx/player_damage.mp3 assets/audio/sfx/heart.mp3; do
+            test -s "$file"
+          done
           test -s sce_sys/icon0.png
           test -s sce_sys/pic0.png
           test -s sce_sys/pic1.png
@@ -92,17 +99,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Complete-v1.19.pkg
-          sha256sum output/Geometric-Wars-Complete-v1.19.pkg > output/Geometric-Wars-Complete-v1.19.pkg.sha256
-          ls -lh output/Geometric-Wars-Complete-v1.19.pkg
-          cat output/Geometric-Wars-Complete-v1.19.pkg.sha256
+          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Complete-v1.20.pkg
+          sha256sum output/Geometric-Wars-Complete-v1.20.pkg > output/Geometric-Wars-Complete-v1.20.pkg.sha256
+          ls -lh output/Geometric-Wars-Complete-v1.20.pkg
+          cat output/Geometric-Wars-Complete-v1.20.pkg.sha256
 
       - name: Upload native PS4 package
         uses: actions/upload-artifact@v4
         with:
           name: Geometric-Wars-Native-PS4
           path: |
-            output/Geometric-Wars-Complete-v1.19.pkg
-            output/Geometric-Wars-Complete-v1.19.pkg.sha256
+            output/Geometric-Wars-Complete-v1.20.pkg
+            output/Geometric-Wars-Complete-v1.20.pkg.sha256
           if-no-files-found: error
           retention-days: 30

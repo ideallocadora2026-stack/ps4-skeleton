@@ -12,7 +12,6 @@ namespace
 {
 const int SCREEN_WIDTH = 1920;
 const int SCREEN_HEIGHT = 1080;
-const uint64_t FRAME_TIME_US = 16667;
 
 void stopOnStartupError(const char* stage)
 {
@@ -53,7 +52,7 @@ int main(int, char**)
         if (SDL_UpdateWindowSurface(window) != 0)
             stopOnStartupError(SDL_GetError());
 
-        nextFrame += FRAME_TIME_US;
+        nextFrame += 1000000u / static_cast<uint64_t>(game.targetFps());
         const uint64_t now = sceKernelGetProcessTime();
         if (now < nextFrame)
             sceKernelUsleep(static_cast<uint32_t>(nextFrame - now));

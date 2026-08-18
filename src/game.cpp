@@ -1,5 +1,6 @@
 #include "game.hpp"
 
+#include "audio.hpp"
 #include "draw.hpp"
 
 #include <orbis/Pad.h>
@@ -90,6 +91,7 @@ enum Action
     ActionUpgradeDamage,
     ActionUpgradeSkill,
     ActionGrenade,
+    ActionBuyGrenade,
     ActionCount
 };
 
@@ -178,6 +180,8 @@ const uint32_t PROFILE_MAGIC = 0x47575034u;
 const uint32_t PROFILE_VERSION = 2u;
 const int PROFILE_STORED_ACTIONS = 5;
 const uint8_t PROFILE_GRENADE_MARKER = 0x47u;
+const uint8_t PROFILE_BUY_GRENADE_MARKER = 0x42u;
+const uint8_t PROFILE_VOLUME_MARKER = 0x56u;
 const int GRENADE_COST = 50;
 const char* PROFILE_DIRECTORY = "/data/GEOM00001";
 const char* PROFILE_PATH = "/data/GEOM00001/profile.bin";
@@ -544,11 +548,12 @@ struct Game::Impl
           pausePad(0), controllerCount(0), playerCount(0), lastTick(0), fpsTimer(0), fpsFrames(0), fpsValue(0), rng(0xc0ffee11u),
           mapMinX(0), mapMinY(0), mapMaxX(SCREEN_W), mapMaxY(SCREEN_H), wave(1),
           waveElapsed(0), spawnTimer(0), announcementTimer(0), bossDelay(0), cameraShake(0),
-          totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0),
+          totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0), lastBossShape(-1),
           enemyColor(RED), graphicsQuality(GraphicsQuality::High), ownedSkins(1u), ownedHats(1u),
           shopTab(ShopTab::Skins), controlIndex(0), bindingAction(-1), noticeTimer(0),
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
-          menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu)
+          menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
+          musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false)
     {
         std::memset(&boss, 0, sizeof(boss));
         std::memset(nativePadHandles, -1, sizeof(nativePadHandles));
@@ -560,6 +565,7 @@ struct Game::Impl
 
     ~Impl()
     {
+        audio.shutdown();
         for (int i = 0; i < 4; ++i)
         {
             if (nativePadHandles[i] >= 0)
@@ -572,6 +578,7 @@ struct Game::Impl
     }
 
     SDL_Renderer* renderer;
+    AudioEngine audio;
     bool active;
     Screen screen;
     Screen returnScreen;
@@ -602,6 +609,7 @@ struct Game::Impl
     float lobbyTimer;
     bool localRequested;
     int enemyEdges;
+    int lastBossShape;
     Color enemyColor;
     GraphicsQuality graphicsQuality;
     uint32_t ownedSkins;
@@ -623,6 +631,9 @@ struct Game::Impl
     float menuTravelEffect;
     float panelEntryEffect;
     Screen renderedScreen;
+    float musicVolume;
+    float soundVolume;
+    bool coinSoundAlternate;
 
     std::vector<Projectile> projectiles;
     std::vector<Projectile> enemyProjectiles;
@@ -681,6 +692,7 @@ struct Game::Impl
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
     void addFloatingText(float x, float y, const std::string& text, Color color);
     void addDrop(float x, float y, DropType type);
+    void rewardDefeatedEnemy(const Enemy& enemy, int owner);
     void damagePlayer(Player& player, float damage);
     void buyUpgrade(Player& player, int type);
     void resolveWalls(float& x, float& y, float radius);
@@ -714,6 +726,7 @@ struct Game::Impl
     int qualityStars() const;
     int qualityParticleStep() const;
     int qualityParticleLimit() const;
+    int targetFps() const;
 };
 
 void Game::Impl::resetSettings()
@@ -726,6 +739,7 @@ void Game::Impl::resetSettings()
         settings[i].keys[ActionUpgradeDamage] = PAD_R1;
         settings[i].keys[ActionUpgradeSkill] = PAD_TRIANGLE;
         settings[i].keys[ActionGrenade] = PAD_L2;
+        settings[i].keys[ActionBuyGrenade] = PAD_SQUARE;
         settings[i].sensitivity = 1.0f;
         settings[i].rumble = 1.0f;
     }
@@ -745,6 +759,9 @@ void Game::Impl::resetProfile(bool persist)
     std::memset(activeSkins, 0, sizeof(activeSkins));
     std::memset(activeHats, 0, sizeof(activeHats));
     graphicsQuality = GraphicsQuality::High;
+    musicVolume = 1.0f;
+    soundVolume = 1.0f;
+    audio.setVolumes(musicVolume, soundVolume);
     resetSettings();
     resetConfirmTimer = 0.0f;
     for (int i = 0; i < playerCount; ++i)
@@ -791,8 +808,18 @@ bool Game::Impl::loadProfile()
             const int grenadeKey = profile.reserved[1 + i];
             if (grenadeKey >= 0 && grenadeKey < PAD_BUTTON_COUNT) settings[i].keys[ActionGrenade] = grenadeKey;
         }
+        if (profile.reserved[8] == PROFILE_BUY_GRENADE_MARKER)
+        {
+            const int buyGrenadeKey = profile.reserved[9 + i];
+            if (buyGrenadeKey >= 0 && buyGrenadeKey < PAD_BUTTON_COUNT) settings[i].keys[ActionBuyGrenade] = buyGrenadeKey;
+        }
         settings[i].sensitivity = clampf(profile.sensitivity[i], 0.5f, 3.0f);
         settings[i].rumble = clampf(profile.rumble[i], 0.0f, 2.0f);
+    }
+    if (profile.reserved[16] == PROFILE_VOLUME_MARKER)
+    {
+        musicVolume = clampf(profile.reserved[17] / 100.0f, 0.0f, 1.0f);
+        soundVolume = clampf(profile.reserved[18] / 100.0f, 0.0f, 1.0f);
     }
     return true;
 }
@@ -813,10 +840,15 @@ bool Game::Impl::saveProfile(bool show)
         profile.activeHat[i] = activeHats[i];
         for (int action = 0; action < PROFILE_STORED_ACTIONS; ++action) profile.keys[i][action] = static_cast<int8_t>(settings[i].keys[action]);
         profile.reserved[1 + i] = static_cast<uint8_t>(settings[i].keys[ActionGrenade]);
+        profile.reserved[9 + i] = static_cast<uint8_t>(settings[i].keys[ActionBuyGrenade]);
         profile.sensitivity[i] = settings[i].sensitivity;
         profile.rumble[i] = settings[i].rumble;
     }
     profile.reserved[0] = PROFILE_GRENADE_MARKER;
+    profile.reserved[8] = PROFILE_BUY_GRENADE_MARKER;
+    profile.reserved[16] = PROFILE_VOLUME_MARKER;
+    profile.reserved[17] = static_cast<uint8_t>(musicVolume * 100.0f + 0.5f);
+    profile.reserved[18] = static_cast<uint8_t>(soundVolume * 100.0f + 0.5f);
     profile.checksum = profileChecksum(profile);
 
     mkdir(PROFILE_DIRECTORY, 0777);
@@ -868,11 +900,20 @@ int Game::Impl::qualityParticleLimit() const
     return graphicsQuality == GraphicsQuality::High ? 600 : (graphicsQuality == GraphicsQuality::Medium ? 260 : 130);
 }
 
+int Game::Impl::targetFps() const
+{
+    if (graphicsQuality == GraphicsQuality::High) return 60;
+    if (graphicsQuality == GraphicsQuality::Medium) return 90;
+    return 120;
+}
+
 bool Game::Impl::initialize()
 {
     loadProfile();
     sceUserServiceInitialize(nullptr);
     scePadInit();
+    audio.setVolumes(musicVolume, soundVolume);
+    audio.initialize();
     const uint32_t inputNow = SDL_GetTicks();
     if (controllerRefreshTick == 0 || inputNow - controllerRefreshTick >= 100)
     {
@@ -914,6 +955,7 @@ void Game::Impl::refreshControllers()
             }
             nativePadHandles[i] = pads[i].handle;
         }
+        audio.setControllerUser(i, desired);
     }
 }
 
@@ -1118,6 +1160,8 @@ void Game::Impl::tick(uint32_t now)
         panelEntryEffect = 0.28f;
         menuTravelEffect = 0.55f;
     }
+    audio.setMusicMode(screen == Screen::Shop ? MusicMode::Shop : (boss.active ? MusicMode::Boss : MusicMode::General));
+    draw::setThinText(screen != Screen::Menu);
     render();
 }
 
@@ -1237,28 +1281,31 @@ void Game::Impl::updateControls(float)
         return;
     }
 
-    const int optionCount = 10;
+    const int optionCount = 13;
     if (pressed(pad, PAD_UP)) controlIndex = (controlIndex + optionCount - 1) % optionCount;
     if (pressed(pad, PAD_DOWN)) controlIndex = (controlIndex + 1) % optionCount;
 
     int direction = 0;
     if (pressed(pad, PAD_LEFT)) direction = -1;
     if (pressed(pad, PAD_RIGHT)) direction = 1;
-    if (direction != 0 && controlIndex >= 6 && controlIndex <= 8)
+    if (direction != 0 && controlIndex >= ActionCount && controlIndex <= 11)
     {
-        if (controlIndex == 6)
+        if (controlIndex == 7)
         {
             int quality = static_cast<int>(graphicsQuality);
             quality = (quality + direction + 3) % 3;
             graphicsQuality = static_cast<GraphicsQuality>(quality);
         }
-        else if (controlIndex == 7) config.sensitivity = clampf(config.sensitivity + direction * 0.1f, 0.5f, 3.0f);
-        else config.rumble = clampf(config.rumble + direction * 0.1f, 0.0f, 2.0f);
+        else if (controlIndex == 8) config.sensitivity = clampf(config.sensitivity + direction * 0.1f, 0.5f, 3.0f);
+        else if (controlIndex == 9) config.rumble = clampf(config.rumble + direction * 0.1f, 0.0f, 2.0f);
+        else if (controlIndex == 10) musicVolume = clampf(musicVolume + direction * 0.05f, 0.0f, 1.0f);
+        else soundVolume = clampf(soundVolume + direction * 0.05f, 0.0f, 1.0f);
+        audio.setVolumes(musicVolume, soundVolume);
         profileDirty = true;
         saveProfile(false);
     }
 
-    if (pressed(pad, PAD_CIRCLE) || (controlIndex == 9 && pressed(pad, PAD_CROSS)))
+    if (pressed(pad, PAD_CIRCLE) || (controlIndex == 12 && pressed(pad, PAD_CROSS)))
     {
         saveProfile(false);
         screen = returnScreen;
@@ -1268,14 +1315,19 @@ void Game::Impl::updateControls(float)
     if (pressed(pad, PAD_CROSS))
     {
         if (controlIndex < ActionCount) bindingAction = controlIndex;
-        else if (controlIndex >= 6 && controlIndex <= 8)
+        else if (controlIndex >= ActionCount && controlIndex <= 11)
         {
-            if (controlIndex == 6)
+            if (controlIndex == 7)
                 graphicsQuality = static_cast<GraphicsQuality>((static_cast<int>(graphicsQuality) + 1) % 3);
-            else if (controlIndex == 7)
+            else if (controlIndex == 8)
                 config.sensitivity = config.sensitivity >= 3.0f ? 0.5f : clampf(config.sensitivity + 0.1f, 0.5f, 3.0f);
-            else
+            else if (controlIndex == 9)
                 config.rumble = config.rumble >= 2.0f ? 0.0f : clampf(config.rumble + 0.1f, 0.0f, 2.0f);
+            else if (controlIndex == 10)
+                musicVolume = musicVolume >= 1.0f ? 0.0f : clampf(musicVolume + 0.05f, 0.0f, 1.0f);
+            else
+                soundVolume = soundVolume >= 1.0f ? 0.0f : clampf(soundVolume + 0.05f, 0.0f, 1.0f);
+            audio.setVolumes(musicVolume, soundVolume);
             profileDirty = true;
             saveProfile(false);
         }
@@ -1396,6 +1448,7 @@ void Game::Impl::resetWorld()
     cameraShake = 0.0f;
     totalKills = 0;
     enemyEdges = 0;
+    lastBossShape = -1;
     enemyColor = RED;
 }
 
@@ -1501,6 +1554,31 @@ void Game::Impl::addDrop(float x, float y, DropType type)
     drops.push_back(drop);
 }
 
+void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
+{
+    if (enemy.kind == 1)
+    {
+        addDrop(enemy.x, enemy.y, DropType::Heart);
+        addFloatingText(enemy.x, enemy.y - 20.0f, "CORACAO!", PINK);
+    }
+    else
+    {
+        if (random01() < 0.40f) addDrop(enemy.x, enemy.y, DropType::Gold);
+        if (random01() < 0.18f) addDrop(enemy.x, enemy.y, DropType::Silver);
+    }
+    if (owner >= 0 && owner < playerCount)
+    {
+        players[owner].score += 10;
+        players[owner].kills++;
+    }
+    ++totalKills;
+    if (enemy.kind != 1 && totalKills > 0 && totalKills % 50 == 0)
+    {
+        addDrop(enemy.x, enemy.y, DropType::Heart);
+        addFloatingText(enemy.x, enemy.y - 20.0f, "CORACAO!", PINK);
+    }
+}
+
 void Game::Impl::spawnEnemy()
 {
     const int side = randomInt(0, 3);
@@ -1566,8 +1644,10 @@ void Game::Impl::spawnBoss()
     std::memset(&boss, 0, sizeof(boss));
     boss.active = true;
     boss.phase = 1;
-    const int bossOrdinal = std::max(0, wave / 5 - 1);
-    boss.shape = bossOrdinal % BossCount;
+    boss.shape = randomInt(0, BossCount - 1);
+    if (BossCount > 1 && boss.shape == lastBossShape)
+        boss.shape = (boss.shape + randomInt(1, BossCount - 1)) % BossCount;
+    lastBossShape = boss.shape;
     boss.x = (mapMinX + mapMaxX) * 0.5f;
     boss.y = mapMinY - 120.0f;
     boss.radius = 55.0f;
@@ -1599,7 +1679,8 @@ void Game::Impl::spawnBoss()
     }
     enemies.clear();
     enemyProjectiles.clear();
-    showNotice("CHEFE " + number(boss.shape + 1) + " DE " + number(BossCount));
+    const char* bossNames[BossCount] = {"NEXO X", "QUADRADO", "TRIANGULO", "CIRCULO", "DIRECIONAL", "TOUCHPAD"};
+    showNotice(std::string("CHEFE ALEATORIO: ") + bossNames[boss.shape]);
 }
 
 void Game::Impl::bossWeaponPosition(int index, float& x, float& y) const
@@ -1633,10 +1714,10 @@ void Game::Impl::addEnemyProjectile(float x, float y, float angle, float speed, 
 
 void Game::Impl::spawnBossDrone()
 {
-    if (boss.droneCount >= 50) return;
+    if (boss.droneCount >= 10) return;
     int activeDrones = 0;
     for (unsigned i = 0; i < enemies.size(); ++i) if (enemies[i].kind == 1) ++activeDrones;
-    if (activeDrones >= 50) { boss.droneCount = 50; return; }
+    if (activeDrones >= 10) return;
     Enemy drone;
     const float angle = random01() * PI * 2.0f;
     drone.x = boss.x + std::cos(angle) * (boss.radius + 35.0f);
@@ -2056,26 +2137,32 @@ void Game::Impl::updateBoss(float dt)
             boss.angle += boss.rotationDirection * rotationSpeed * dt;
             boss.sweepRemaining -= rotationSpeed * dt;
             boss.laserActive = true;
-            if (boss.rotationDirection < 0.0f && boss.droneCount < 50)
+            if (boss.rotationDirection < 0.0f && boss.droneCount < 10)
             {
                 boss.droneTimer -= dt;
-                while (boss.droneTimer <= 0.0f && boss.droneCount < 50)
+                while (boss.droneTimer <= 0.0f && boss.droneCount < 10)
                 {
                     spawnBossDrone();
-                    boss.droneTimer += 0.11f;
+                    boss.droneTimer += 0.30f;
                 }
             }
             if (boss.sweepRemaining <= 0.0f)
             {
                 boss.rotationDirection = -boss.rotationDirection;
                 boss.sweepRemaining = 340.0f * PI / 180.0f;
-                if (boss.rotationDirection < 0.0f) { boss.droneCount = 0; boss.droneTimer = 0.0f; }
+                if (boss.rotationDirection < 0.0f) boss.droneTimer = 0.0f;
             }
-            const float laserEndX = boss.x + std::cos(boss.angle) * 2800.0f;
-            const float laserEndY = boss.y + std::sin(boss.angle) * 2800.0f;
-            for (int p = 0; p < playerCount; ++p)
-                if (players[p].hp > 0.0f && pointSegmentDistanceSquared(players[p].x, players[p].y, boss.x, boss.y, laserEndX, laserEndY) < 25.0f * 25.0f)
-                    damagePlayer(players[p], 14.0f);
+            for (int tip = 0; tip < 4; ++tip)
+            {
+                const float laserAngle = boss.angle + PI * 0.25f + tip * PI * 0.5f;
+                const float startX = boss.x + std::cos(laserAngle) * boss.radius;
+                const float startY = boss.y + std::sin(laserAngle) * boss.radius;
+                const float endX = startX + std::cos(laserAngle) * 2800.0f;
+                const float endY = startY + std::sin(laserAngle) * 2800.0f;
+                for (int p = 0; p < playerCount; ++p)
+                    if (players[p].hp > 0.0f && pointSegmentDistanceSquared(players[p].x, players[p].y, startX, startY, endX, endY) < 25.0f * 25.0f)
+                        damagePlayer(players[p], 14.0f);
+            }
         }
         else if (boss.shape == BossSquare)
         {
@@ -2362,8 +2449,10 @@ void Game::Impl::defeatBoss()
     boss.active = false;
     enemyProjectiles.clear();
     bossDelay = 3.5f;
-    enemyEdges = shape == BossTriangle ? 3 : (shape == BossSquare ? 4 : 0);
+    const int shapeEdges[BossCount] = {8, 4, 3, 0, 8, 4};
+    enemyEdges = shapeEdges[shape];
     enemyColor = theme;
+    audio.playTv(SoundEffect::BossDestroyed);
     mapMinX -= 300.0f;
     mapMinY -= 300.0f;
     mapMaxX += 300.0f;
@@ -2525,6 +2614,7 @@ void Game::Impl::throwGrenade(Player& player, int playerIndex)
 
 void Game::Impl::explodeGrenade(float x, float y, int owner)
 {
+    audio.playTv(SoundEffect::Grenade);
     const float blastRadius = 285.0f;
     const float blastRadiusSquared = blastRadius * blastRadius;
     int destroyed = 0;
@@ -2544,15 +2634,7 @@ void Game::Impl::explodeGrenade(float x, float y, int owner)
         if (nearestIndex < 0) break;
 
         const Enemy defeated = enemies[nearestIndex];
-        if (random01() < 0.40f) addDrop(defeated.x, defeated.y, DropType::Gold);
-        if (random01() < 0.18f) addDrop(defeated.x, defeated.y, DropType::Silver);
-        if (owner >= 0 && owner < playerCount)
-        {
-            players[owner].score += 10;
-            players[owner].kills++;
-        }
-        ++totalKills;
-        if (totalKills > 0 && totalKills % 50 == 0) addDrop(defeated.x, defeated.y, DropType::Heart);
+        rewardDefeatedEnemy(defeated, owner);
         addParticles(defeated.x, defeated.y, defeated.color, 18, 390.0f, 0.85f);
         enemies.erase(enemies.begin() + nearestIndex);
         ++destroyed;
@@ -2635,6 +2717,7 @@ void Game::Impl::damagePlayer(Player& player, float damage)
     cameraShake = 14.0f;
     addParticles(player.x, player.y, RED, 16, 300.0f, 0.8f);
     rumble(player.pad, 0.9f, 250);
+    audio.playController(SoundEffect::PlayerDamage, player.pad);
     if (player.hp <= 0.0f)
     {
         player.hp = 0.0f;
@@ -2805,19 +2888,8 @@ void Game::Impl::handleProjectileCollisions(float dt)
                     const float x = enemy.x;
                     const float y = enemy.y;
                     const Color colorValue = enemy.color;
-                    if (random01() < 0.40f) addDrop(x, y, DropType::Gold);
-                    if (random01() < 0.18f) addDrop(x, y, DropType::Silver);
-                    if (projectile.owner >= 0 && projectile.owner < playerCount)
-                    {
-                        players[projectile.owner].score += 10;
-                        players[projectile.owner].kills++;
-                    }
-                    ++totalKills;
-                    if (totalKills > 0 && totalKills % 50 == 0)
-                    {
-                        addDrop(x, y, DropType::Heart);
-                        addFloatingText(x, y - 20.0f, "CORACAO!", PINK);
-                    }
+                    const Enemy defeated = enemy;
+                    rewardDefeatedEnemy(defeated, projectile.owner);
                     addParticles(x, y, colorValue, 18, 320.0f, 0.8f);
                     enemies.erase(enemies.begin() + e);
                 }
@@ -3018,6 +3090,13 @@ void Game::Impl::handleDrops(float dt)
                 target->hp = std::min(target->maxHp, target->hp + heal);
                 addFloatingText(target->x, target->y - 30.0f, "+" + number(heal) + " INTEGRIDADE", PINK);
             }
+            if (drop.type == DropType::Heart)
+                audio.playController(SoundEffect::Heart, target->pad);
+            else
+            {
+                audio.playController(coinSoundAlternate ? SoundEffect::Coin2 : SoundEffect::Coin1, target->pad);
+                coinSoundAlternate = !coinSoundAlternate;
+            }
             addParticles(drop.x, drop.y, drop.type == DropType::Heart ? PINK : (drop.type == DropType::Silver ? SILVER : GOLD), 10, 190.0f, 0.5f);
             rumble(target->pad, 0.2f, 70);
             drops.erase(drops.begin() + i);
@@ -3157,7 +3236,7 @@ void Game::Impl::updatePlaying(float dt)
         if (pressed(player.pad, player.keys[ActionUpgradeFire])) buyUpgrade(player, 1);
         if (pressed(player.pad, player.keys[ActionUpgradeDamage])) buyUpgrade(player, 2);
         if (pressed(player.pad, player.keys[ActionUpgradeSkill])) buyUpgrade(player, 3);
-        if (pressed(player.pad, PAD_SQUARE)) buyUpgrade(player, 4);
+        if (pressed(player.pad, player.keys[ActionBuyGrenade])) buyUpgrade(player, 4);
     }
 
     if (announcementTimer > 0.0f) announcementTimer -= dt;
@@ -3342,29 +3421,35 @@ void Game::Impl::renderLobby()
 void Game::Impl::renderControls()
 {
     renderBackdrop();
-    draw::panel(renderer, 370, 65, 1180, 950, GOLD, PANEL);
-    draw::text(renderer, "CONTROLES - JOGADOR " + number(pausePad + 1), SCREEN_W / 2, 105, 5, GOLD, true);
-    const char* labels[10] = {"PAUSAR", "HABILIDADE (TIME STOP)", "UPGRADE TIRO", "UPGRADE DANO", "UPGRADE HABILIDADE", "LANCAR GRANADA", "GRAFICOS", "SENSIBILIDADE", "VIBRACAO", "VOLTAR"};
-    const int yStart = 165;
+    draw::panel(renderer, 370, 28, 1180, 1025, GOLD, PANEL);
+    draw::text(renderer, "CONTROLES - JOGADOR " + number(pausePad + 1), SCREEN_W / 2, 60, 5, GOLD, true);
+    const char* labels[13] = {
+        "PAUSAR", "HABILIDADE (TIME STOP)", "UPGRADE TIRO", "UPGRADE DANO",
+        "UPGRADE HABILIDADE", "LANCAR GRANADA", "COMPRAR GRANADA", "GRAFICOS",
+        "SENSIBILIDADE", "VIBRACAO", "VOLUME MUSICA", "VOLUME SONS", "VOLTAR"
+    };
+    const int yStart = 125;
     const PlayerSettings& config = settings[std::max(0, std::min(3, pausePad))];
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < 13; ++i)
     {
-        const int y = yStart + i * 75;
+        const int y = yStart + i * 65;
         if (i == controlIndex)
         {
-            draw::fillRect(renderer, 470, y - 14, 980, 58, {110, 80, 0, 65});
-            draw::outlineRect(renderer, 470, y - 14, 980, 58, GOLD, 2);
+            draw::fillRect(renderer, 470, y - 12, 980, 50, {110, 80, 0, 65});
+            draw::outlineRect(renderer, 470, y - 12, 980, 50, GOLD, 2);
             draw::triangle(renderer, 490, y + 15, 510, y + 2, 510, y + 28, GOLD);
         }
-        draw::text(renderer, labels[i], 535, y, i == 1 || i == 4 || i == 5 ? 2 : 3, i == controlIndex ? WHITE : MUTED);
+        draw::text(renderer, labels[i], 535, y, i == 1 || i == 4 || i == 5 || i == 6 ? 2 : 3, i == controlIndex ? WHITE : MUTED);
         std::string value;
         if (i < ActionCount) value = bindingAction == i ? "PRESSIONE UM BOTAO..." : buttonName(config.keys[i]);
-        else if (i == 6) value = graphicsQuality == GraphicsQuality::High ? "ALTO" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO" : "BAIXO");
-        else if (i == 7) value = oneDecimal(config.sensitivity) + "X";
-        else if (i == 8) value = number(static_cast<int>(config.rumble * 100.0f + 0.5f)) + "%";
+        else if (i == 7) value = graphicsQuality == GraphicsQuality::High ? "ALTO 60 FPS" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO 90 FPS" : "BAIXO 120 FPS");
+        else if (i == 8) value = oneDecimal(config.sensitivity) + "X";
+        else if (i == 9) value = number(static_cast<int>(config.rumble * 100.0f + 0.5f)) + "%";
+        else if (i == 10) value = number(static_cast<int>(musicVolume * 100.0f + 0.5f)) + "%";
+        else if (i == 11) value = number(static_cast<int>(soundVolume * 100.0f + 0.5f)) + "%";
         if (!value.empty()) draw::text(renderer, value, 1375 - draw::textWidth(value, 2), y + 3, 2, i == controlIndex ? CYAN : WHITE);
     }
-    draw::text(renderer, "D-PAD NAVEGAR / AJUSTAR   X ALTERAR   O VOLTAR", SCREEN_W / 2, 940, 2, MUTED, true);
+    draw::text(renderer, "D-PAD NAVEGAR / AJUSTAR   X ALTERAR   O VOLTAR", SCREEN_W / 2, 1010, 2, MUTED, true);
 }
 
 void Game::Impl::renderShop()
@@ -3477,7 +3562,7 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
     const int x = static_cast<int>(point.x);
     const int y = static_cast<int>(point.y);
     const int radius = static_cast<int>(enemy.radius);
-    if (enemy.kind == 1)
+    if (enemy.kind == 1 || enemy.edges == 8)
     {
         const float c = std::cos(enemy.angle);
         const float s = std::sin(enemy.angle);
@@ -3502,7 +3587,7 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
         }
         draw::triangle(renderer, px[0], py[0], px[1], py[1], px[2], py[2], enemy.color);
     }
-    else if (enemy.edges == 4 || enemy.edges == 0)
+    else if (enemy.edges == 4)
     {
         int px[4], py[4];
         for (int i = 0; i < 4; ++i)
@@ -3536,10 +3621,17 @@ void Game::Impl::renderBoss(const Viewport& viewport, const Player& cameraPlayer
 
     if (boss.phase == 3 && boss.shape == BossX && boss.laserActive)
     {
-        const Vec2 laserEnd = toScreen(viewport, cameraPlayer, boss.x + std::cos(boss.angle) * 2800.0f, boss.y + std::sin(boss.angle) * 2800.0f);
-        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 20, 60, 34}, 46);
-        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 35, 85, 115}, 24);
-        draw::line(renderer, x, y, static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), WHITE, 6);
+        for (int tip = 0; tip < 4; ++tip)
+        {
+            const float laserAngle = boss.angle + PI * 0.25f + tip * PI * 0.5f;
+            const float startX = boss.x + std::cos(laserAngle) * boss.radius;
+            const float startY = boss.y + std::sin(laserAngle) * boss.radius;
+            const Vec2 laserStart = toScreen(viewport, cameraPlayer, startX, startY);
+            const Vec2 laserEnd = toScreen(viewport, cameraPlayer, startX + std::cos(laserAngle) * 2800.0f, startY + std::sin(laserAngle) * 2800.0f);
+            draw::line(renderer, static_cast<int>(laserStart.x), static_cast<int>(laserStart.y), static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 20, 60, 34}, 34);
+            draw::line(renderer, static_cast<int>(laserStart.x), static_cast<int>(laserStart.y), static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), {255, 35, 85, 115}, 18);
+            draw::line(renderer, static_cast<int>(laserStart.x), static_cast<int>(laserStart.y), static_cast<int>(laserEnd.x), static_cast<int>(laserEnd.y), WHITE, 4);
+        }
     }
 
     if (boss.shape == BossSquare && boss.phase == 2)
@@ -3926,7 +4018,7 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
 
     if (viewport.w >= 620)
     {
-        const int shopWidth = 320;
+        const int shopWidth = 400;
         const int shopHeight = 164;
         const int shopX = viewport.x + viewport.w - padding - shopWidth;
         const int shopY = bottom - shopHeight;
@@ -3934,17 +4026,21 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
         draw::outlineRect(renderer, shopX, shopY, shopWidth, shopHeight, withAlpha(CYAN, 45), 1);
         draw::text(renderer, "UPGRADES", shopX + 15, shopY + 12, 1, MUTED);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeFire]) + "]", shopX + 15, shopY + 40, 1, MUTED);
-        draw::text(renderer, "TIRO LV." + number(player.fireLevel), shopX + 105, shopY + 39, 1, WHITE);
-        draw::text(renderer, player.fireLevel >= 10 ? "MAX" : number(player.fireCost) + " G", shopX + 267, shopY + 39, 1, GOLD);
+        draw::text(renderer, "TIRO LV." + number(player.fireLevel), shopX + 170, shopY + 39, 1, WHITE);
+        const std::string firePrice = player.fireLevel >= 10 ? "MAX" : number(player.fireCost) + " G";
+        draw::text(renderer, firePrice, shopX + 385 - draw::textWidth(firePrice, 1), shopY + 39, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeDamage]) + "]", shopX + 15, shopY + 68, 1, MUTED);
-        draw::text(renderer, "DANO LV." + number(player.damageLevel), shopX + 105, shopY + 67, 1, WHITE);
-        draw::text(renderer, player.damageLevel >= 10 ? "MAX" : number(player.damageCost) + " G", shopX + 267, shopY + 67, 1, GOLD);
+        draw::text(renderer, "DANO LV." + number(player.damageLevel), shopX + 170, shopY + 67, 1, WHITE);
+        const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(player.damageCost) + " G";
+        draw::text(renderer, damagePrice, shopX + 385 - draw::textWidth(damagePrice, 1), shopY + 67, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
-        draw::text(renderer, "HABILIDADE", shopX + 105, shopY + 95, 1, WHITE);
-        draw::text(renderer, number(player.skillCost) + " G", shopX + 267, shopY + 95, 1, GOLD);
-        draw::text(renderer, std::string("[") + buttonName(PAD_SQUARE) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
-        draw::text(renderer, "GRANADA", shopX + 105, shopY + 123, 1, GRENADE_GREEN);
-        draw::text(renderer, number(GRENADE_COST) + " G", shopX + 267, shopY + 123, 1, GOLD);
+        draw::text(renderer, "HABILIDADE", shopX + 170, shopY + 95, 1, WHITE);
+        const std::string skillPrice = number(player.skillCost) + " G";
+        draw::text(renderer, skillPrice, shopX + 385 - draw::textWidth(skillPrice, 1), shopY + 95, 1, GOLD);
+        draw::text(renderer, std::string("[") + buttonName(player.keys[ActionBuyGrenade]) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
+        draw::text(renderer, "GRANADA", shopX + 170, shopY + 123, 1, GRENADE_GREEN);
+        const std::string grenadePrice = number(GRENADE_COST) + " G";
+        draw::text(renderer, grenadePrice, shopX + 385 - draw::textWidth(grenadePrice, 1), shopY + 123, 1, GOLD);
     }
 }
 
@@ -4251,5 +4347,10 @@ void Game::tick(uint32_t now)
 bool Game::running() const
 {
     return impl_->active;
+}
+
+int Game::targetFps() const
+{
+    return impl_->targetFps();
 }
 }

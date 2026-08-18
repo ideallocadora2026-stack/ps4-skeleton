@@ -15,6 +15,7 @@ public:
     bool initialize();
     void tick(uint32_t now);
     bool running() const;
+    int targetFps() const;
 
 private:
     Game(const Game&);
@@ -24,4 +25,3 @@ private:
     Impl* impl_;
 };
 }
-
