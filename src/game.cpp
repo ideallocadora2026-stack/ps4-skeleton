@@ -73,6 +73,7 @@ enum class Screen
     Paused,
     Controls,
     Shop,
+    Stats,
     GameOver
 };
 
@@ -92,6 +93,7 @@ enum Action
     ActionUpgradeSkill,
     ActionGrenade,
     ActionBuyGrenade,
+    ActionStats,
     ActionCount
 };
 
@@ -105,7 +107,18 @@ enum class GraphicsQuality
 enum class ShopTab
 {
     Skins = 0,
-    Hats
+    Hats,
+    Characters
+};
+
+enum CharacterType
+{
+    CharacterTimeStop = 0,
+    CharacterDamageArea,
+    CharacterShield,
+    CharacterDrone,
+    CharacterVampire,
+    CharacterCount
 };
 
 enum BossType
@@ -152,6 +165,22 @@ const CosmeticItem HATS[] = {
 
 const int COSMETIC_COUNT = 12;
 
+struct CharacterItem
+{
+    const char* name;
+    const char* description;
+    int cost;
+    Color color;
+};
+
+const CharacterItem CHARACTERS[CharacterCount] = {
+    {"TIME STOP", "PARA O TEMPO", 0, CYAN},
+    {"DAMAGE AREA", "AREA DE VENENO", 1000, GREEN},
+    {"SHIELD", "ESCUDO POR 10S", 1000, WHITE},
+    {"THE DRONE", "DRONE DE COMBATE", 1000, GOLD},
+    {"VAMPIRE", "ROUBA 90% DE VIDA", 1000, PINK}
+};
+
 struct PlayerSettings
 {
     int keys[ActionCount];
@@ -182,7 +211,9 @@ const int PROFILE_STORED_ACTIONS = 5;
 const uint8_t PROFILE_GRENADE_MARKER = 0x47u;
 const uint8_t PROFILE_BUY_GRENADE_MARKER = 0x42u;
 const uint8_t PROFILE_VOLUME_MARKER = 0x56u;
-const int GRENADE_COST = 50;
+const uint8_t PROFILE_CHARACTER_MARKER = 0x43u;
+const uint8_t PROFILE_STATS_MARKER = 0x53u;
+const int GRENADE_COST = 10;
 const char* PROFILE_DIRECTORY = "/data/GEOM00001";
 const char* PROFILE_PATH = "/data/GEOM00001/profile.bin";
 const char* PROFILE_TEMP_PATH = "/data/GEOM00001/profile.tmp";
@@ -251,7 +282,18 @@ struct Player
     int skillCost;
     int fireLevel;
     int damageLevel;
+    int skillLevel;
     int grenades;
+    int character;
+    int souls;
+    float poisonAreaTimer;
+    float shieldTimer;
+    float droneTimer;
+    float droneFireTimer;
+    float droneAngle;
+    float droneBeamTimer;
+    float droneTargetX;
+    float droneTargetY;
     bool pendingRevive;
     int keys[ActionCount];
     float sensitivity;
@@ -296,6 +338,26 @@ struct Enemy
     Color color;
     int kind;
     int targetPlayer;
+    float poisonTimer;
+    float poisonVisualTimer;
+    int poisonOwner;
+};
+
+struct Soul
+{
+    float x;
+    float y;
+    int owner;
+    float life;
+};
+
+struct LifeStream
+{
+    float x;
+    float y;
+    int owner;
+    float heal;
+    float life;
 };
 
 struct Drop
@@ -549,7 +611,7 @@ struct Game::Impl
           mapMinX(0), mapMinY(0), mapMaxX(SCREEN_W), mapMaxY(SCREEN_H), wave(1),
           waveElapsed(0), spawnTimer(0), announcementTimer(0), bossDelay(0), cameraShake(0),
           totalKills(0), profileSilver(0), lobbyTimer(3.0f), localRequested(false), enemyEdges(0), lastBossShape(-1),
-          enemyColor(RED), graphicsQuality(GraphicsQuality::High), ownedSkins(1u), ownedHats(1u),
+          enemyColor(RED), graphicsQuality(GraphicsQuality::High), ownedSkins(1u), ownedHats(1u), ownedCharacters(1u),
           shopTab(ShopTab::Skins), controlIndex(0), bindingAction(-1), noticeTimer(0),
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
           menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
@@ -562,6 +624,7 @@ struct Game::Impl
         std::memset(rumbleTimers, 0, sizeof(rumbleTimers));
         std::memset(activeSkins, 0, sizeof(activeSkins));
         std::memset(activeHats, 0, sizeof(activeHats));
+        std::memset(activeCharacters, 0, sizeof(activeCharacters));
         resetSettings();
     }
 
@@ -616,8 +679,10 @@ struct Game::Impl
     GraphicsQuality graphicsQuality;
     uint32_t ownedSkins;
     uint32_t ownedHats;
+    uint32_t ownedCharacters;
     uint8_t activeSkins[4];
     uint8_t activeHats[4];
+    uint8_t activeCharacters[4];
     PlayerSettings settings[4];
     int nativePadHandles[4];
     float rumbleTimers[4];
@@ -650,6 +715,8 @@ struct Game::Impl
     std::vector<Drop> drops;
     std::vector<Particle> particles;
     std::vector<FloatingText> floatingTexts;
+    std::vector<Soul> souls;
+    std::vector<LifeStream> lifeStreams;
     std::vector<Wall> walls;
     Boss boss;
 
@@ -677,6 +744,7 @@ struct Game::Impl
     void updateShop(float dt);
     void updateLobby(float dt);
     void updatePlaying(float dt);
+    void updateStats(float dt);
     void startGame(int count);
     void resetWorld();
     void nextWave();
@@ -698,6 +766,12 @@ struct Game::Impl
     void throwGrenade(Player& player, int playerIndex);
     void explodeGrenade(float x, float y, int owner);
     bool anyTimeStop() const;
+    bool skillReady(const Player& player) const;
+    void configureCharacter(Player& player);
+    void activateSkill(Player& player, int playerIndex);
+    void updateCharacterAbilities(float dt);
+    void updateSouls(float dt);
+    void fireCompanionDrone(Player& player, int playerIndex);
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
     void addFloatingText(float x, float y, const std::string& text, Color color);
     void addDrop(float x, float y, DropType type);
@@ -718,6 +792,7 @@ struct Game::Impl
     void renderLobby();
     void renderControls();
     void renderShop();
+    void renderStats();
     void renderGameOver();
     void renderPause();
     void renderPlaying();
@@ -729,6 +804,7 @@ struct Game::Impl
     void renderEnemy(const Viewport& viewport, const Player& cameraPlayer, const Enemy& enemy);
     void renderBoss(const Viewport& viewport, const Player& cameraPlayer);
     void renderPlayer(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index);
+    void renderCharacterEffects(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index);
     void renderAvatar(int x, int y, int radius, Color color, int skin, int hat, float animation, bool dead);
     void renderFloatingTexts(const Viewport& viewport, const Player& cameraPlayer);
     void renderHud(const Viewport& viewport, const Player& player, int index);
@@ -751,6 +827,7 @@ void Game::Impl::resetSettings()
         settings[i].keys[ActionUpgradeSkill] = PAD_TRIANGLE;
         settings[i].keys[ActionGrenade] = PAD_L2;
         settings[i].keys[ActionBuyGrenade] = PAD_SQUARE;
+        settings[i].keys[ActionStats] = PAD_L3;
         settings[i].sensitivity = 1.0f;
         settings[i].rumble = 1.0f;
     }
@@ -767,8 +844,10 @@ void Game::Impl::resetProfile(bool persist)
     profileSilver = 0;
     ownedSkins = 1u;
     ownedHats = 1u;
+    ownedCharacters = 1u;
     std::memset(activeSkins, 0, sizeof(activeSkins));
     std::memset(activeHats, 0, sizeof(activeHats));
+    std::memset(activeCharacters, 0, sizeof(activeCharacters));
     graphicsQuality = GraphicsQuality::High;
     musicVolume = 1.0f;
     soundVolume = 1.0f;
@@ -780,6 +859,10 @@ void Game::Impl::resetProfile(bool persist)
         const int slot = std::max(0, std::min(3, players[i].pad));
         players[i].skin = 0;
         players[i].hat = 0;
+        players[i].character = CharacterTimeStop;
+        players[i].skillLevel = 1;
+        players[i].souls = 0;
+        configureCharacter(players[i]);
         players[i].sensitivity = settings[slot].sensitivity;
         players[i].rumbleStrength = settings[slot].rumble;
         for (int action = 0; action < ActionCount; ++action) players[i].keys[action] = settings[slot].keys[action];
@@ -802,6 +885,7 @@ bool Game::Impl::loadProfile()
     graphicsQuality = profile.graphics >= 0 && profile.graphics <= 2 ? static_cast<GraphicsQuality>(profile.graphics) : GraphicsQuality::High;
     ownedSkins = profile.ownedSkins | 1u;
     ownedHats = profile.ownedHats | 1u;
+    ownedCharacters = 1u;
     const uint32_t validMask = (1u << COSMETIC_COUNT) - 1u;
     ownedSkins &= validMask;
     ownedHats &= validMask;
@@ -823,6 +907,17 @@ bool Game::Impl::loadProfile()
         {
             const int buyGrenadeKey = profile.reserved[9 + i];
             if (buyGrenadeKey >= 0 && buyGrenadeKey < PAD_BUTTON_COUNT) settings[i].keys[ActionBuyGrenade] = buyGrenadeKey;
+        }
+        if (profile.reserved[20] == PROFILE_CHARACTER_MARKER)
+        {
+            ownedCharacters = static_cast<uint32_t>(profile.reserved[21]) | 1u;
+            const int character = profile.reserved[22 + i];
+            activeCharacters[i] = character >= 0 && character < CharacterCount && (ownedCharacters & (1u << character)) ? static_cast<uint8_t>(character) : 0;
+        }
+        if (profile.reserved[27] == PROFILE_STATS_MARKER)
+        {
+            const int statsKey = profile.reserved[28 + i];
+            if (statsKey >= 0 && statsKey < PAD_BUTTON_COUNT) settings[i].keys[ActionStats] = statsKey;
         }
         settings[i].sensitivity = clampf(profile.sensitivity[i], 0.5f, 3.0f);
         settings[i].rumble = clampf(profile.rumble[i], 0.0f, 2.0f);
@@ -852,6 +947,8 @@ bool Game::Impl::saveProfile(bool show)
         for (int action = 0; action < PROFILE_STORED_ACTIONS; ++action) profile.keys[i][action] = static_cast<int8_t>(settings[i].keys[action]);
         profile.reserved[1 + i] = static_cast<uint8_t>(settings[i].keys[ActionGrenade]);
         profile.reserved[9 + i] = static_cast<uint8_t>(settings[i].keys[ActionBuyGrenade]);
+        profile.reserved[22 + i] = activeCharacters[i];
+        profile.reserved[28 + i] = static_cast<uint8_t>(settings[i].keys[ActionStats]);
         profile.sensitivity[i] = settings[i].sensitivity;
         profile.rumble[i] = settings[i].rumble;
     }
@@ -860,6 +957,9 @@ bool Game::Impl::saveProfile(bool show)
     profile.reserved[16] = PROFILE_VOLUME_MARKER;
     profile.reserved[17] = static_cast<uint8_t>(musicVolume * 100.0f + 0.5f);
     profile.reserved[18] = static_cast<uint8_t>(soundVolume * 100.0f + 0.5f);
+    profile.reserved[20] = PROFILE_CHARACTER_MARKER;
+    profile.reserved[21] = static_cast<uint8_t>(ownedCharacters & 0xffu);
+    profile.reserved[27] = PROFILE_STATS_MARKER;
     profile.checksum = profileChecksum(profile);
 
     mkdir(PROFILE_DIRECTORY, 0777);
@@ -1023,7 +1123,7 @@ int Game::Impl::firstConnectedPad() const
 
 void Game::Impl::updateDisconnectedPlayers()
 {
-    const bool activeSession = screen == Screen::Playing || screen == Screen::Paused ||
+    const bool activeSession = screen == Screen::Playing || screen == Screen::Paused || screen == Screen::Stats ||
         ((screen == Screen::Controls || screen == Screen::Shop) && returnScreen == Screen::Paused);
     if (!activeSession) return;
 
@@ -1154,6 +1254,9 @@ void Game::Impl::tick(uint32_t now)
             break;
         case Screen::Shop:
             updateShop(dt);
+            break;
+        case Screen::Stats:
+            updateStats(dt);
             break;
         case Screen::Lobby:
             updateLobby(dt);
@@ -1290,31 +1393,31 @@ void Game::Impl::updateControls(float)
         return;
     }
 
-    const int optionCount = 13;
+    const int optionCount = ActionCount + 6;
     if (pressed(pad, PAD_UP)) controlIndex = (controlIndex + optionCount - 1) % optionCount;
     if (pressed(pad, PAD_DOWN)) controlIndex = (controlIndex + 1) % optionCount;
 
     int direction = 0;
     if (pressed(pad, PAD_LEFT)) direction = -1;
     if (pressed(pad, PAD_RIGHT)) direction = 1;
-    if (direction != 0 && controlIndex >= ActionCount && controlIndex <= 11)
+    if (direction != 0 && controlIndex >= ActionCount && controlIndex <= ActionCount + 4)
     {
-        if (controlIndex == 7)
+        if (controlIndex == ActionCount)
         {
             int quality = static_cast<int>(graphicsQuality);
             quality = (quality + direction + 3) % 3;
             graphicsQuality = static_cast<GraphicsQuality>(quality);
         }
-        else if (controlIndex == 8) config.sensitivity = clampf(config.sensitivity + direction * 0.1f, 0.5f, 3.0f);
-        else if (controlIndex == 9) config.rumble = clampf(config.rumble + direction * 0.1f, 0.0f, 2.0f);
-        else if (controlIndex == 10) musicVolume = clampf(musicVolume + direction * 0.05f, 0.0f, 1.0f);
+        else if (controlIndex == ActionCount + 1) config.sensitivity = clampf(config.sensitivity + direction * 0.1f, 0.5f, 3.0f);
+        else if (controlIndex == ActionCount + 2) config.rumble = clampf(config.rumble + direction * 0.1f, 0.0f, 2.0f);
+        else if (controlIndex == ActionCount + 3) musicVolume = clampf(musicVolume + direction * 0.05f, 0.0f, 1.0f);
         else soundVolume = clampf(soundVolume + direction * 0.05f, 0.0f, 1.0f);
         audio.setVolumes(musicVolume, soundVolume);
         profileDirty = true;
         saveProfile(false);
     }
 
-    if (pressed(pad, PAD_CIRCLE) || (controlIndex == 12 && pressed(pad, PAD_CROSS)))
+    if (pressed(pad, PAD_CIRCLE) || (controlIndex == ActionCount + 5 && pressed(pad, PAD_CROSS)))
     {
         saveProfile(false);
         screen = returnScreen;
@@ -1324,15 +1427,15 @@ void Game::Impl::updateControls(float)
     if (pressed(pad, PAD_CROSS))
     {
         if (controlIndex < ActionCount) bindingAction = controlIndex;
-        else if (controlIndex >= ActionCount && controlIndex <= 11)
+        else if (controlIndex >= ActionCount && controlIndex <= ActionCount + 4)
         {
-            if (controlIndex == 7)
+            if (controlIndex == ActionCount)
                 graphicsQuality = static_cast<GraphicsQuality>((static_cast<int>(graphicsQuality) + 1) % 3);
-            else if (controlIndex == 8)
+            else if (controlIndex == ActionCount + 1)
                 config.sensitivity = config.sensitivity >= 3.0f ? 0.5f : clampf(config.sensitivity + 0.1f, 0.5f, 3.0f);
-            else if (controlIndex == 9)
+            else if (controlIndex == ActionCount + 2)
                 config.rumble = config.rumble >= 2.0f ? 0.0f : clampf(config.rumble + 0.1f, 0.0f, 2.0f);
-            else if (controlIndex == 10)
+            else if (controlIndex == ActionCount + 3)
                 musicVolume = musicVolume >= 1.0f ? 0.0f : clampf(musicVolume + 0.05f, 0.0f, 1.0f);
             else
                 soundVolume = soundVolume >= 1.0f ? 0.0f : clampf(soundVolume + 0.05f, 0.0f, 1.0f);
@@ -1353,6 +1456,10 @@ void Game::Impl::updateControls(float)
 void Game::Impl::updateShop(float)
 {
     const int pad = std::max(0, std::min(3, pausePad));
+    const int tabCount = 3;
+    const int itemStart = 3;
+    const int backIndex = 15;
+    const int itemCount = shopTab == ShopTab::Characters ? CharacterCount : COSMETIC_COUNT;
     if (pressed(pad, PAD_CIRCLE))
     {
         saveProfile(false);
@@ -1361,27 +1468,31 @@ void Game::Impl::updateShop(float)
         return;
     }
 
-    if (menuIndex < 2)
+    if (menuIndex < tabCount)
     {
-        if (pressed(pad, PAD_LEFT) || pressed(pad, PAD_RIGHT)) menuIndex = menuIndex == 0 ? 1 : 0;
-        if (pressed(pad, PAD_DOWN)) menuIndex = 2;
+        if (pressed(pad, PAD_LEFT)) menuIndex = (menuIndex + tabCount - 1) % tabCount;
+        if (pressed(pad, PAD_RIGHT)) menuIndex = (menuIndex + 1) % tabCount;
+        shopTab = static_cast<ShopTab>(menuIndex);
+        if (pressed(pad, PAD_DOWN)) menuIndex = itemStart;
     }
-    else if (menuIndex < 14)
+    else if (menuIndex < backIndex)
     {
-        if (pressed(pad, PAD_LEFT)) menuIndex = std::max(2, menuIndex - 1);
-        if (pressed(pad, PAD_RIGHT)) menuIndex = std::min(13, menuIndex + 1);
-        if (pressed(pad, PAD_UP)) menuIndex = menuIndex - 3 >= 2 ? menuIndex - 3 : ((menuIndex - 2) % 3 == 0 ? 0 : 1);
-        if (pressed(pad, PAD_DOWN)) menuIndex = menuIndex + 3 <= 13 ? menuIndex + 3 : 14;
+        const int lastItem = itemStart + itemCount - 1;
+        menuIndex = std::min(menuIndex, lastItem);
+        if (pressed(pad, PAD_LEFT)) menuIndex = std::max(itemStart, menuIndex - 1);
+        if (pressed(pad, PAD_RIGHT)) menuIndex = std::min(lastItem, menuIndex + 1);
+        if (pressed(pad, PAD_UP)) menuIndex = menuIndex - 3 >= itemStart ? menuIndex - 3 : static_cast<int>(shopTab);
+        if (pressed(pad, PAD_DOWN)) menuIndex = menuIndex + 3 <= lastItem ? menuIndex + 3 : backIndex;
     }
-    else if (pressed(pad, PAD_UP) || pressed(pad, PAD_LEFT) || pressed(pad, PAD_RIGHT)) menuIndex = 13;
+    else if (pressed(pad, PAD_UP) || pressed(pad, PAD_LEFT) || pressed(pad, PAD_RIGHT)) menuIndex = itemStart + itemCount - 1;
 
     if (!pressed(pad, PAD_CROSS)) return;
-    if (menuIndex == 0 || menuIndex == 1)
+    if (menuIndex < tabCount)
     {
-        shopTab = menuIndex == 0 ? ShopTab::Skins : ShopTab::Hats;
+        shopTab = static_cast<ShopTab>(menuIndex);
         return;
     }
-    if (menuIndex == 14)
+    if (menuIndex == backIndex)
     {
         saveProfile(false);
         screen = returnScreen;
@@ -1389,7 +1500,38 @@ void Game::Impl::updateShop(float)
         return;
     }
 
-    const int item = menuIndex - 2;
+    const int item = menuIndex - itemStart;
+    if (shopTab == ShopTab::Characters)
+    {
+        if (item < 0 || item >= CharacterCount) return;
+        const uint32_t mask = 1u << item;
+        if ((ownedCharacters & mask) == 0)
+        {
+            if (profileSilver < CHARACTERS[item].cost)
+            {
+                showNotice("PRATA INSUFICIENTE");
+                return;
+            }
+            profileSilver -= CHARACTERS[item].cost;
+            ownedCharacters |= mask;
+            showNotice("PERSONAGEM COMPRADO");
+        }
+        activeCharacters[pad] = static_cast<uint8_t>(item);
+        for (int i = 0; i < playerCount; ++i)
+        {
+            if (players[i].pad != pad) continue;
+            players[i].character = item;
+            players[i].timeStop = 0.0f;
+            players[i].poisonAreaTimer = 0.0f;
+            players[i].shieldTimer = 0.0f;
+            players[i].droneTimer = 0.0f;
+            players[i].skillCooldown = 0.0f;
+            configureCharacter(players[i]);
+        }
+        profileDirty = true;
+        saveProfile(false);
+        return;
+    }
     const bool skinTab = shopTab == ShopTab::Skins;
     uint32_t& owned = skinTab ? ownedSkins : ownedHats;
     const CosmeticItem* catalog = skinTab ? SKINS : HATS;
@@ -1415,6 +1557,14 @@ void Game::Impl::updateShop(float)
     }
     profileDirty = true;
     saveProfile(false);
+}
+
+void Game::Impl::updateStats(float)
+{
+    int playerIndex = 0;
+    for (int i = 0; i < playerCount; ++i) if (players[i].pad == pausePad) { playerIndex = i; break; }
+    const Player& player = players[playerIndex];
+    if (pressed(pausePad, PAD_CIRCLE) || pressed(pausePad, player.keys[ActionStats])) screen = Screen::Playing;
 }
 
 void Game::Impl::updateLobby(float dt)
@@ -1443,6 +1593,8 @@ void Game::Impl::resetWorld()
     drops.clear();
     particles.clear();
     floatingTexts.clear();
+    souls.clear();
+    lifeStreams.clear();
     walls.clear();
     std::memset(&boss, 0, sizeof(boss));
     mapMinX = 0.0f;
@@ -1496,6 +1648,7 @@ void Game::Impl::startGame(int count)
         player.skillCost = 25;
         player.fireLevel = 1;
         player.damageLevel = 1;
+        player.skillLevel = 1;
         player.grenades = 0;
         player.pendingRevive = false;
         const int slot = std::max(0, std::min(3, player.pad));
@@ -1504,10 +1657,21 @@ void Game::Impl::startGame(int count)
         player.rumbleStrength = settings[slot].rumble;
         player.skin = activeSkins[slot];
         player.hat = activeHats[slot];
+        player.character = activeCharacters[slot];
+        player.souls = 0;
+        player.poisonAreaTimer = 0.0f;
+        player.shieldTimer = 0.0f;
+        player.droneTimer = 0.0f;
+        player.droneFireTimer = 0.0f;
+        player.droneAngle = 0.0f;
+        player.droneBeamTimer = 0.0f;
+        player.droneTargetX = player.x;
+        player.droneTargetY = player.y;
         player.cosmeticAnimation = 0.0f;
         player.touchTracking = false;
         player.touchAnchorX = 0.0f;
         player.touchAnchorY = 0.0f;
+        configureCharacter(player);
     }
     screen = Screen::Playing;
     menuIndex = 0;
@@ -1518,6 +1682,215 @@ bool Game::Impl::anyTimeStop() const
     for (int i = 0; i < playerCount; ++i)
         if (players[i].hp > 0.0f && players[i].timeStop > 0.0f) return true;
     return false;
+}
+
+bool Game::Impl::skillReady(const Player& player) const
+{
+    if (player.character == CharacterVampire) return player.souls >= 50;
+    if (player.skillCooldown > 0.0f) return false;
+    if (player.character == CharacterTimeStop) return player.timeStop <= 0.0f;
+    if (player.character == CharacterDamageArea) return player.poisonAreaTimer <= 0.0f;
+    if (player.character == CharacterShield) return player.shieldTimer <= 0.0f;
+    if (player.character == CharacterDrone) return player.droneTimer <= 0.0f;
+    return true;
+}
+
+void Game::Impl::configureCharacter(Player& player)
+{
+    const float levelBonus = std::max(0, player.skillLevel - 1) * 0.5f;
+    if (player.character == CharacterDamageArea)
+    {
+        player.skillDuration = 3.0f + levelBonus;
+        player.skillCooldownMax = std::max(3.0f, 5.0f - (player.skillLevel - 1) * 0.2f);
+    }
+    else if (player.character == CharacterShield)
+    {
+        player.skillDuration = 10.0f + levelBonus;
+        player.skillCooldownMax = std::max(10.0f, 20.0f - (player.skillLevel - 1) * 0.8f);
+    }
+    else if (player.character == CharacterDrone)
+    {
+        player.skillDuration = 8.0f + levelBonus;
+        player.skillCooldownMax = std::max(8.0f, 16.0f - (player.skillLevel - 1) * 0.6f);
+    }
+    else if (player.character == CharacterVampire)
+    {
+        player.skillDuration = 0.0f;
+        player.skillCooldownMax = 1.0f;
+    }
+    else
+    {
+        player.skillDuration = 3.0f + levelBonus;
+        player.skillCooldownMax = std::max(5.0f, 12.0f - (player.skillLevel - 1));
+    }
+}
+
+void Game::Impl::activateSkill(Player& player, int playerIndex)
+{
+    if (!skillReady(player)) return;
+    if (player.character == CharacterDamageArea)
+    {
+        player.poisonAreaTimer = player.skillDuration;
+        player.skillCooldown = player.skillCooldownMax;
+        addFloatingText(player.x, player.y - 34.0f, "DAMAGE AREA!", GREEN);
+    }
+    else if (player.character == CharacterShield)
+    {
+        player.shieldTimer = player.skillDuration;
+        player.skillCooldown = player.skillCooldownMax;
+        addFloatingText(player.x, player.y - 34.0f, "SHIELD!", WHITE);
+    }
+    else if (player.character == CharacterDrone)
+    {
+        player.droneTimer = player.skillDuration;
+        player.droneFireTimer = 0.0f;
+        player.skillCooldown = player.skillCooldownMax;
+        addFloatingText(player.x, player.y - 34.0f, "THE DRONE!", GOLD);
+    }
+    else if (player.character == CharacterVampire)
+    {
+        int nearestIndex = -1;
+        float nearest = 1e30f;
+        for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
+        {
+            if (enemies[i].kind == 1) continue;
+            const float d = distanceSquared(player.x, player.y, enemies[i].x, enemies[i].y);
+            if (d < nearest) { nearest = d; nearestIndex = i; }
+        }
+        if (nearestIndex < 0)
+        {
+            addFloatingText(player.x, player.y - 34.0f, "SEM ALVO", MUTED);
+            return;
+        }
+        Enemy& target = enemies[nearestIndex];
+        const float stolen = std::max(1.0f, target.hp * 0.90f);
+        target.hp = std::max(1.0f, target.hp - stolen);
+        LifeStream stream = {target.x, target.y, playerIndex, stolen, 2.0f};
+        lifeStreams.push_back(stream);
+        player.souls = 0;
+        addFloatingText(target.x, target.y - 30.0f, "VIDA CONVERTIDA", PINK);
+    }
+    else
+    {
+        player.timeStop = player.skillDuration;
+        player.skillCooldown = player.skillCooldownMax;
+        addFloatingText(player.x, player.y - 30.0f, "TEMPO PARADO!", player.color);
+    }
+    addParticles(player.x, player.y, CHARACTERS[player.character].color, 38, 380.0f, 0.9f);
+    rumble(player.pad, 0.6f, 500);
+}
+
+void Game::Impl::fireCompanionDrone(Player& player, int playerIndex)
+{
+    player.droneTargetX = player.x;
+    player.droneTargetY = player.y;
+    int nearestIndex = -1;
+    float nearest = 1e30f;
+    for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
+    {
+        const float d = distanceSquared(player.x, player.y, enemies[i].x, enemies[i].y);
+        if (d < nearest) { nearest = d; nearestIndex = i; }
+    }
+    if (nearestIndex >= 0)
+    {
+        Enemy& target = enemies[nearestIndex];
+        player.droneTargetX = target.x;
+        player.droneTargetY = target.y;
+        target.hp -= target.maxHp * 0.50f;
+        if (target.hp <= 0.0f)
+        {
+            const Enemy defeated = target;
+            rewardDefeatedEnemy(defeated, playerIndex);
+            addParticles(defeated.x, defeated.y, defeated.color, 18, 330.0f, 0.8f);
+            enemies.erase(enemies.begin() + nearestIndex);
+        }
+    }
+    else if (boss.active)
+    {
+        player.droneTargetX = boss.x;
+        player.droneTargetY = boss.y;
+        if (boss.phase == 1)
+        {
+            for (int i = 0; i < 3; ++i)
+                if (boss.weapons[i].active) { damageBoss(boss.weapons[i].maxHp * 0.10f, i); break; }
+        }
+        else if (boss.phase == 2 && boss.shape == BossSquare)
+        {
+            for (int i = 0; i < 4; ++i)
+                if (boss.parts[i].active) { player.droneTargetX = boss.parts[i].x; player.droneTargetY = boss.parts[i].y; damageBossPart(i, boss.parts[i].maxHp * 0.10f); break; }
+        }
+        else damageBoss((boss.phase == 2 ? boss.maxHp : boss.maxRageHp) * 0.10f, -1);
+    }
+    player.droneBeamTimer = 0.16f;
+}
+
+void Game::Impl::updateCharacterAbilities(float dt)
+{
+    for (int p = 0; p < playerCount; ++p)
+    {
+        Player& player = players[p];
+        player.poisonAreaTimer = std::max(0.0f, player.poisonAreaTimer - dt);
+        player.shieldTimer = std::max(0.0f, player.shieldTimer - dt);
+        player.droneTimer = std::max(0.0f, player.droneTimer - dt);
+        player.droneBeamTimer = std::max(0.0f, player.droneBeamTimer - dt);
+        if (player.poisonAreaTimer > 0.0f)
+        {
+            const float radiusSquared = 235.0f * 235.0f;
+            for (unsigned e = 0; e < enemies.size(); ++e)
+                if (distanceSquared(player.x, player.y, enemies[e].x, enemies[e].y) <= radiusSquared)
+                {
+                    enemies[e].poisonTimer = 6.0f;
+                    enemies[e].poisonOwner = p;
+                }
+        }
+        if (player.droneTimer > 0.0f)
+        {
+            player.droneAngle += dt * 3.4f;
+            player.droneFireTimer -= dt;
+            if (player.droneFireTimer <= 0.0f)
+            {
+                player.droneFireTimer = 1.0f;
+                fireCompanionDrone(player, p);
+            }
+        }
+    }
+}
+
+void Game::Impl::updateSouls(float dt)
+{
+    for (int i = static_cast<int>(souls.size()) - 1; i >= 0; --i)
+    {
+        Soul& soul = souls[i];
+        if (soul.owner < 0 || soul.owner >= playerCount || players[soul.owner].hp <= 0.0f) { souls.erase(souls.begin() + i); continue; }
+        Player& owner = players[soul.owner];
+        const float angle = angleTo(soul.x, soul.y, owner.x, owner.y);
+        soul.x += std::cos(angle) * 520.0f * dt;
+        soul.y += std::sin(angle) * 520.0f * dt;
+        soul.life -= dt;
+        if (distanceSquared(soul.x, soul.y, owner.x, owner.y) < 24.0f * 24.0f)
+        {
+            owner.souls = std::min(50, owner.souls + 1);
+            souls.erase(souls.begin() + i);
+        }
+        else if (soul.life <= 0.0f) souls.erase(souls.begin() + i);
+    }
+    for (int i = static_cast<int>(lifeStreams.size()) - 1; i >= 0; --i)
+    {
+        LifeStream& stream = lifeStreams[i];
+        if (stream.owner < 0 || stream.owner >= playerCount || players[stream.owner].hp <= 0.0f) { lifeStreams.erase(lifeStreams.begin() + i); continue; }
+        Player& owner = players[stream.owner];
+        const float angle = angleTo(stream.x, stream.y, owner.x, owner.y);
+        stream.x += std::cos(angle) * 660.0f * dt;
+        stream.y += std::sin(angle) * 660.0f * dt;
+        stream.life -= dt;
+        if (distanceSquared(stream.x, stream.y, owner.x, owner.y) < 28.0f * 28.0f)
+        {
+            owner.hp = std::min(owner.maxHp, owner.hp + stream.heal);
+            addFloatingText(owner.x, owner.y - 30.0f, "+VIDA VAMPIRE", PINK);
+            lifeStreams.erase(lifeStreams.begin() + i);
+        }
+        else if (stream.life <= 0.0f) lifeStreams.erase(lifeStreams.begin() + i);
+    }
 }
 
 void Game::Impl::addParticles(float x, float y, Color colorValue, int count, float speed, float life)
@@ -1579,6 +1952,11 @@ void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
     {
         players[owner].score += 10;
         players[owner].kills++;
+        if (enemy.kind == 0 && players[owner].character == CharacterVampire)
+        {
+            Soul soul = {enemy.x, enemy.y, owner, 5.0f};
+            souls.push_back(soul);
+        }
     }
     ++totalKills;
     if (enemy.kind != 1 && totalKills > 0 && totalKills % 50 == 0)
@@ -1623,6 +2001,9 @@ void Game::Impl::spawnEnemy()
     enemy.color = enemyColor;
     enemy.kind = 0;
     enemy.targetPlayer = -1;
+    enemy.poisonTimer = 0.0f;
+    enemy.poisonVisualTimer = 0.0f;
+    enemy.poisonOwner = -1;
     enemies.push_back(enemy);
 }
 
@@ -1741,6 +2122,9 @@ void Game::Impl::spawnBossDrone()
     drone.color = PLAYER_COLORS[0];
     drone.kind = 1;
     drone.targetPlayer = randomInt(0, std::max(0, playerCount - 1));
+    drone.poisonTimer = 0.0f;
+    drone.poisonVisualTimer = 0.0f;
+    drone.poisonOwner = -1;
     enemies.push_back(drone);
     ++boss.droneCount;
 }
@@ -1748,24 +2132,28 @@ void Game::Impl::spawnBossDrone()
 void Game::Impl::spawnArrowWall(int direction)
 {
     const float speed = 610.0f;
-    const int gap = randomInt(2, 8);
-    const int lanes = 12;
+    const int lanes = 16;
+    const int gap = randomInt(2, lanes - 4);
     for (int lane = 0; lane < lanes; ++lane)
     {
-        if (lane == gap || lane == gap + 1 || (random01() < 0.08f && lane > 0 && lane < lanes - 1)) continue;
-        if (direction == 0 || direction == 2)
+        if (lane == gap || lane == gap + 1 || (random01() < 0.05f && lane > 0 && lane < lanes - 1)) continue;
+        for (int volley = 0; volley < 3; ++volley)
         {
-            const float x = mapMinX + (lane + 0.5f) * (mapMaxX - mapMinX) / lanes;
-            const bool downwards = direction == 2;
-            addEnemyProjectile(x, downwards ? mapMinY + 15.0f : mapMaxY - 15.0f,
-                               downwards ? PI * 0.5f : -PI * 0.5f, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
-        }
-        else
-        {
-            const float y = mapMinY + (lane + 0.5f) * (mapMaxY - mapMinY) / lanes;
-            const bool rightwards = direction == 1;
-            addEnemyProjectile(rightwards ? mapMinX + 15.0f : mapMaxX - 15.0f, y,
-                               rightwards ? 0.0f : PI, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
+            const float spacing = volley * 76.0f;
+            if (direction == 0 || direction == 2)
+            {
+                const float x = mapMinX + (lane + 0.5f) * (mapMaxX - mapMinX) / lanes;
+                const bool downwards = direction == 2;
+                addEnemyProjectile(x, downwards ? mapMinY + 15.0f - spacing : mapMaxY - 15.0f + spacing,
+                                   downwards ? PI * 0.5f : -PI * 0.5f, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
+            }
+            else
+            {
+                const float y = mapMinY + (lane + 0.5f) * (mapMaxY - mapMinY) / lanes;
+                const bool rightwards = direction == 1;
+                addEnemyProjectile(rightwards ? mapMinX + 15.0f - spacing : mapMaxX - 15.0f + spacing, y,
+                                   rightwards ? 0.0f : PI, speed, 13.0f, RED, ProjectileArrow, 0, 18.0f);
+            }
         }
     }
     cameraShake = 13.0f;
@@ -1798,6 +2186,7 @@ void Game::Impl::failMemoryRound()
     boss.memoryFlashTimer = 0.7f;
     player.hp = std::max(0.0f, player.hp - player.maxHp / 3.0f);
     player.invincible = 0.8f;
+    audio.playController(SoundEffect::PlayerDamage, player.pad);
     cameraShake = 34.0f;
     rumble(player.pad, 1.0f, 900);
     addParticles(player.x, player.y, RED, 45, 480.0f, 1.0f);
@@ -1882,6 +2271,7 @@ void Game::Impl::setBossPhase(int phase)
         if (boss.shape == BossCircle) boss.attackTimer = -0.4f;
         if (boss.shape == BossDpad) boss.attackTimer = 0.0f;
         if (boss.shape == BossTouchpad) boss.abilityTimer = 25.0f;
+        if (boss.shape == BossDpad || boss.shape == BossTouchpad) boss.color = {2, 3, 7, 255};
     }
     else
     {
@@ -1931,6 +2321,7 @@ void Game::Impl::setBossPhase(int phase)
             boss.abilityTimer = playerCount > 0 ? players[0].skillCooldownMax : 12.0f;
             boss.stateTimer = 0.0f;
         }
+        if (boss.shape == BossDpad || boss.shape == BossTouchpad) boss.color = {2, 3, 7, 255};
     }
     addParticles(boss.x, boss.y, boss.color, 80, 430.0f, 1.3f);
     for (int i = 0; i < playerCount; ++i) rumble(players[i].pad, 0.8f, 600);
@@ -2679,10 +3070,10 @@ void Game::Impl::buyUpgrade(Player& player, int type)
     else if (type == 3 && player.coins >= player.skillCost)
     {
         player.coins -= player.skillCost;
-        player.skillDuration += 0.5f;
-        player.skillCooldownMax = std::max(5.0f, player.skillCooldownMax - 1.0f);
+        ++player.skillLevel;
+        configureCharacter(player);
         player.skillCost = static_cast<int>(player.skillCost * 1.8f);
-        addFloatingText(player.x, player.y - 28.0f, "HAB MELHORADA!", GOLD);
+        addFloatingText(player.x, player.y - 28.0f, "HABILIDADE LV." + number(player.skillLevel), GOLD);
         rumble(player.pad, 0.4f, 120);
     }
     else if (type == 4 && player.coins >= GRENADE_COST)
@@ -2721,6 +3112,12 @@ void Game::Impl::resolveWalls(float& x, float& y, float radius)
 void Game::Impl::damagePlayer(Player& player, float damage)
 {
     if (player.hp <= 0.0f || player.invincible > 0.0f) return;
+    if (player.shieldTimer > 0.0f)
+    {
+        addParticles(player.x, player.y, WHITE, 7, 180.0f, 0.45f);
+        rumble(player.pad, 0.22f, 70);
+        return;
+    }
     player.hp -= damage;
     player.invincible = 0.4f;
     cameraShake = 14.0f;
@@ -2934,6 +3331,25 @@ void Game::Impl::handleEnemies(float dt)
         Enemy& enemy = enemies[i];
         if (!stopped)
         {
+            if (enemy.poisonTimer > 0.0f)
+            {
+                enemy.poisonTimer = std::max(0.0f, enemy.poisonTimer - dt);
+                enemy.poisonVisualTimer -= dt;
+                enemy.hp -= std::max(5.0f, enemy.maxHp * 0.075f) * dt;
+                if (enemy.poisonVisualTimer <= 0.0f)
+                {
+                    enemy.poisonVisualTimer = 0.22f;
+                    addParticles(enemy.x, enemy.y, GREEN, 2, 75.0f, 0.45f);
+                }
+                if (enemy.hp <= 0.0f)
+                {
+                    const Enemy defeated = enemy;
+                    rewardDefeatedEnemy(defeated, enemy.poisonOwner);
+                    addParticles(enemy.x, enemy.y, GREEN, 20, 310.0f, 0.9f);
+                    enemies.erase(enemies.begin() + i);
+                    continue;
+                }
+            }
             Player* target = nullptr;
             float nearest = 1e30f;
             if (enemy.kind == 1 && enemy.targetPlayer >= 0 && enemy.targetPlayer < playerCount && players[enemy.targetPlayer].hp > 0.0f)
@@ -3157,6 +3573,12 @@ void Game::Impl::updatePlaying(float dt)
 {
     for (int i = 0; i < playerCount; ++i)
     {
+        if (pressed(players[i].pad, players[i].keys[ActionStats]))
+        {
+            pausePad = players[i].pad;
+            screen = Screen::Stats;
+            return;
+        }
         if (pressed(players[i].pad, players[i].keys[ActionPause]))
         {
             pausePad = players[i].pad;
@@ -3172,17 +3594,19 @@ void Game::Impl::updatePlaying(float dt)
         if (player.hp <= 0.0f) continue;
         player.invincible = std::max(0.0f, player.invincible - dt);
         if (player.timeStop > 0.0f) player.timeStop = std::max(0.0f, player.timeStop - dt);
-        else player.skillCooldown = std::max(0.0f, player.skillCooldown - dt);
+        if (player.character != CharacterTimeStop || player.timeStop <= 0.0f)
+            player.skillCooldown = std::max(0.0f, player.skillCooldown - dt);
         player.fireTimer = std::max(0.0f, player.fireTimer - dt);
         player.cosmeticAnimation += dt;
 
         const bool skillPressed = pressed(player.pad, player.keys[ActionSkill]);
-        if (skillPressed && boss.active && boss.shape == BossTouchpad && boss.phase == 3 && boss.freezeActive && player.skillCooldown <= 0.0f)
+        if (skillPressed && boss.active && boss.shape == BossTouchpad && boss.phase == 3 && boss.freezeActive && skillReady(player))
         {
             boss.freezeActive = false;
             boss.abilityTimer = player.skillCooldownMax;
             player.timeStop = 0.0f;
-            player.skillCooldown = player.skillCooldownMax;
+            if (player.character == CharacterVampire) player.souls = 0;
+            else player.skillCooldown = player.skillCooldownMax;
             addParticles(player.x, player.y, player.color, 70, 520.0f, 1.2f);
             addParticles(boss.x, boss.y, GOLD, 70, 520.0f, 1.2f);
             addFloatingText(player.x, player.y - 38.0f, "TEMPO ANULADO!", GOLD);
@@ -3190,14 +3614,7 @@ void Game::Impl::updatePlaying(float dt)
             rumble(player.pad, 0.9f, 700);
             cameraShake = 36.0f;
         }
-        else if (skillPressed && player.skillCooldown <= 0.0f && player.timeStop <= 0.0f)
-        {
-            player.timeStop = player.skillDuration;
-            player.skillCooldown = player.skillCooldownMax;
-            addParticles(player.x, player.y, player.color, 44, 390.0f, 1.0f);
-            addFloatingText(player.x, player.y - 30.0f, "TEMPO PARADO!", player.color);
-            rumble(player.pad, 0.6f, 500);
-        }
+        else if (skillPressed) activateSkill(player, i);
 
         float moveX = 0.0f;
         float moveY = 0.0f;
@@ -3247,6 +3664,9 @@ void Game::Impl::updatePlaying(float dt)
         if (pressed(player.pad, player.keys[ActionUpgradeSkill])) buyUpgrade(player, 3);
         if (pressed(player.pad, player.keys[ActionBuyGrenade])) buyUpgrade(player, 4);
     }
+
+    updateCharacterAbilities(dt);
+    updateSouls(dt);
 
     if (announcementTimer > 0.0f) announcementTimer -= dt;
     if (bossDelay > 0.0f)
@@ -3442,30 +3862,31 @@ void Game::Impl::renderControls()
     renderBackdrop();
     draw::panel(renderer, 370, 28, 1180, 1025, GOLD, PANEL);
     draw::text(renderer, "CONTROLES - JOGADOR " + number(pausePad + 1), SCREEN_W / 2, 60, 5, GOLD, true);
-    const char* labels[13] = {
-        "PAUSAR", "HABILIDADE (TIME STOP)", "UPGRADE TIRO", "UPGRADE DANO",
-        "UPGRADE HABILIDADE", "LANCAR GRANADA", "COMPRAR GRANADA", "GRAFICOS",
+    const char* labels[14] = {
+        "PAUSAR", "HABILIDADE DO PERSONAGEM", "UPGRADE TIRO", "UPGRADE DANO",
+        "UPGRADE HABILIDADE", "LANCAR GRANADA", "COMPRAR GRANADA", "ESTATISTICAS",
+        "GRAFICOS",
         "SENSIBILIDADE", "VIBRACAO", "VOLUME MUSICA", "VOLUME SONS", "VOLTAR"
     };
-    const int yStart = 125;
+    const int yStart = 112;
     const PlayerSettings& config = settings[std::max(0, std::min(3, pausePad))];
-    for (int i = 0; i < 13; ++i)
+    for (int i = 0; i < 14; ++i)
     {
-        const int y = yStart + i * 65;
+        const int y = yStart + i * 63;
         if (i == controlIndex)
         {
             draw::fillRect(renderer, 470, y - 12, 980, 50, {110, 80, 0, 65});
             draw::outlineRect(renderer, 470, y - 12, 980, 50, GOLD, 2);
             draw::triangle(renderer, 490, y + 15, 510, y + 2, 510, y + 28, GOLD);
         }
-        draw::text(renderer, labels[i], 535, y, i == 1 || i == 4 || i == 5 || i == 6 ? 2 : 3, i == controlIndex ? WHITE : MUTED);
+        draw::text(renderer, labels[i], 535, y, i == 1 || i == 4 || i == 5 || i == 6 || i == 7 ? 2 : 3, i == controlIndex ? WHITE : MUTED);
         std::string value;
         if (i < ActionCount) value = bindingAction == i ? "PRESSIONE UM BOTAO..." : buttonName(config.keys[i]);
-        else if (i == 7) value = graphicsQuality == GraphicsQuality::High ? "ALTO 60 FPS" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO 60 FPS" : "BAIXO 60 FPS");
-        else if (i == 8) value = oneDecimal(config.sensitivity) + "X";
-        else if (i == 9) value = number(static_cast<int>(config.rumble * 100.0f + 0.5f)) + "%";
-        else if (i == 10) value = number(static_cast<int>(musicVolume * 100.0f + 0.5f)) + "%";
-        else if (i == 11) value = number(static_cast<int>(soundVolume * 100.0f + 0.5f)) + "%";
+        else if (i == ActionCount) value = graphicsQuality == GraphicsQuality::High ? "ALTO 60 FPS" : (graphicsQuality == GraphicsQuality::Medium ? "MEDIO 60 FPS" : "BAIXO 60 FPS");
+        else if (i == ActionCount + 1) value = oneDecimal(config.sensitivity) + "X";
+        else if (i == ActionCount + 2) value = number(static_cast<int>(config.rumble * 100.0f + 0.5f)) + "%";
+        else if (i == ActionCount + 3) value = number(static_cast<int>(musicVolume * 100.0f + 0.5f)) + "%";
+        else if (i == ActionCount + 4) value = number(static_cast<int>(soundVolume * 100.0f + 0.5f)) + "%";
         if (!value.empty()) draw::text(renderer, value, 1375 - draw::textWidth(value, 2), y + 3, 2, i == controlIndex ? CYAN : WHITE);
     }
     draw::text(renderer, "D-PAD NAVEGAR / AJUSTAR   X ALTERAR   O VOLTAR", SCREEN_W / 2, 1010, 2, MUTED, true);
@@ -3479,49 +3900,95 @@ void Game::Impl::renderShop()
     draw::text(renderer, "JOGADOR " + number(pausePad + 1), SCREEN_W / 2, 135, 2, GOLD, true);
     draw::text(renderer, "PRATA DO PERFIL: " + number(profileSilver), SCREEN_W / 2, 168, 2, SILVER, true);
 
-    const int tabX[2] = {255, 535};
-    for (int tab = 0; tab < 2; ++tab)
+    const int tabX[3] = {205, 480, 755};
+    const char* tabNames[3] = {"TRAJES", "ACESSORIOS", "PERSONAGENS"};
+    for (int tab = 0; tab < 3; ++tab)
     {
         const bool selected = menuIndex == tab;
         draw::fillRect(renderer, tabX[tab], 220, 250, 52, selected ? Color{90, 30, 130, 120} : Color{0, 4, 16, 180});
         draw::outlineRect(renderer, tabX[tab], 220, 250, 52, selected ? PURPLE : withAlpha(MUTED, 90), selected ? 2 : 1);
-        draw::text(renderer, tab == 0 ? "TRAJES" : "ACESSORIOS", tabX[tab] + 125, 237, 2, selected ? WHITE : MUTED, true);
+        draw::text(renderer, tabNames[tab], tabX[tab] + 125, 237, tab == 2 ? 1 : 2, selected ? WHITE : MUTED, true);
     }
 
     const bool skins = shopTab == ShopTab::Skins;
+    const bool characters = shopTab == ShopTab::Characters;
     const CosmeticItem* catalog = skins ? SKINS : HATS;
-    const uint32_t owned = skins ? ownedSkins : ownedHats;
-    const int activeItem = skins ? activeSkins[pausePad] : activeHats[pausePad];
-    for (int item = 0; item < COSMETIC_COUNT; ++item)
+    const uint32_t owned = characters ? ownedCharacters : (skins ? ownedSkins : ownedHats);
+    const int activeItem = characters ? activeCharacters[pausePad] : (skins ? activeSkins[pausePad] : activeHats[pausePad]);
+    const int itemCount = characters ? CharacterCount : COSMETIC_COUNT;
+    for (int item = 0; item < itemCount; ++item)
     {
         const int column = item % 3;
         const int row = item / 3;
         const int x = 220 + column * 285;
         const int y = 305 + row * 125;
-        const bool selected = menuIndex == item + 2;
+        const bool selected = menuIndex == item + 3;
         const bool itemOwned = (owned & (1u << item)) != 0;
         const bool equipped = activeItem == item;
         const Color border = equipped ? GREEN : (itemOwned ? GOLD : PURPLE);
         draw::fillRect(renderer, x, y, 265, 108, selected ? Color{60, 25, 90, 190} : Color{0, 4, 16, 180});
         draw::outlineRect(renderer, x, y, 265, 108, selected ? WHITE : withAlpha(border, 150), selected ? 3 : 1);
-        renderAvatar(x + 42, y + 55, 20, PLAYER_COLORS[pausePad], skins ? item : 0, skins ? 0 : item, lastTick / 900.0f, false);
-        const std::string name = catalog[item].name;
+        const Color previewColor = characters ? CHARACTERS[item].color : PLAYER_COLORS[pausePad];
+        renderAvatar(x + 42, y + 55, 20, previewColor,
+                     characters ? activeSkins[pausePad] : (skins ? item : 0),
+                     characters ? activeHats[pausePad] : (skins ? 0 : item), lastTick / 900.0f, false);
+        const std::string name = characters ? CHARACTERS[item].name : catalog[item].name;
         draw::text(renderer, name, x + 78, y + 20, name.size() > 17 ? 1 : 2, WHITE);
-        const std::string status = equipped ? "EQUIPADO" : (itemOwned ? "X EQUIPAR" : (catalog[item].cost == 0 ? "GRATIS" : number(catalog[item].cost) + " PRATA"));
+        const int itemCost = characters ? CHARACTERS[item].cost : catalog[item].cost;
+        const std::string status = equipped ? "EQUIPADO" : (itemOwned ? "X EQUIPAR" : (itemCost == 0 ? "GRATIS" : number(itemCost) + " SILVER"));
         draw::text(renderer, status, x + 78, y + 67, 1, equipped ? GREEN : (itemOwned ? GOLD : SILVER));
     }
 
     draw::panel(renderer, 1130, 250, 500, 560, PURPLE, {1, 4, 15, 210});
-    draw::text(renderer, "MONSTRUARIO", 1380, 292, 3, PURPLE, true);
-    renderAvatar(1380, 500, 72, PLAYER_COLORS[pausePad], activeSkins[pausePad], activeHats[pausePad], lastTick / 900.0f, false);
-    draw::text(renderer, std::string("TRAJE: ") + SKINS[activeSkins[pausePad]].name, 1380, 635, 2, WHITE, true);
-    draw::text(renderer, std::string("ACESSORIO: ") + HATS[activeHats[pausePad]].name, 1380, 685, 1, WHITE, true);
-    draw::text(renderer, "EQUIPAMENTO ATUAL", 1380, 735, 1, MUTED, true);
+    draw::text(renderer, characters ? "PERSONAGEM" : "MONSTRUARIO", 1380, 292, 3, PURPLE, true);
+    renderAvatar(1380, 500, 72, characters ? CHARACTERS[activeCharacters[pausePad]].color : PLAYER_COLORS[pausePad], activeSkins[pausePad], activeHats[pausePad], lastTick / 900.0f, false);
+    if (characters)
+    {
+        draw::text(renderer, std::string("ATIVO: ") + CHARACTERS[activeCharacters[pausePad]].name, 1380, 635, 2, WHITE, true);
+        draw::text(renderer, CHARACTERS[activeCharacters[pausePad]].description, 1380, 685, 1, GREEN, true);
+        draw::text(renderer, activeCharacters[pausePad] == CharacterVampire ? "50 ALMAS PARA ATIVAR" : "R2 / BOTAO MAPEADO", 1380, 735, 1, MUTED, true);
+    }
+    else
+    {
+        draw::text(renderer, std::string("TRAJE: ") + SKINS[activeSkins[pausePad]].name, 1380, 635, 2, WHITE, true);
+        draw::text(renderer, std::string("ACESSORIO: ") + HATS[activeHats[pausePad]].name, 1380, 685, 1, WHITE, true);
+        draw::text(renderer, "EQUIPAMENTO ATUAL", 1380, 735, 1, MUTED, true);
+    }
 
-    const bool backSelected = menuIndex == 14;
+    const bool backSelected = menuIndex == 15;
     if (backSelected) draw::outlineRect(renderer, 770, 875, 380, 54, WHITE, 2);
     draw::text(renderer, "VOLTAR", SCREEN_W / 2, 893, 3, backSelected ? WHITE : MUTED, true);
     draw::text(renderer, "D-PAD NAVEGA   X COMPRA / EQUIPA   O VOLTA", SCREEN_W / 2, 970, 2, MUTED, true);
+}
+
+void Game::Impl::renderStats()
+{
+    renderPlaying();
+    draw::fillRect(renderer, 0, 0, SCREEN_W, SCREEN_H, {0, 0, 8, 145});
+    int playerIndex = 0;
+    for (int i = 0; i < playerCount; ++i) if (players[i].pad == pausePad) { playerIndex = i; break; }
+    const Player& player = players[playerIndex];
+    draw::panel(renderer, 555, 170, 810, 735, player.color, {2, 8, 24, 244});
+    draw::text(renderer, "ESTATISTICAS - JOGADOR " + number(playerIndex + 1), SCREEN_W / 2, 215, 4, player.color, true);
+    draw::text(renderer, CHARACTERS[player.character].name, SCREEN_W / 2, 270, 2, CHARACTERS[player.character].color, true);
+    const int x = 650;
+    const int valueX = 1240;
+    const int y = 350;
+    const int spacing = 72;
+    const std::string values[5] = {
+        oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
+        oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
+        (player.character == CharacterVampire ? number(player.souls) + "/50 ALMAS" : oneDecimal(player.skillDuration) + "S") + "   LV." + number(player.skillLevel),
+        number(player.grenades), number(player.kills)
+    };
+    const char* labels[5] = {"VELOCIDADE DO TIRO", "DANO DO JOGADOR", "HABILIDADE", "GRANADAS", "KILLS"};
+    for (int i = 0; i < 5; ++i)
+    {
+        draw::fillRect(renderer, x, y + i * spacing - 10, 620, 54, i % 2 == 0 ? Color{0, 35, 65, 95} : Color{0, 10, 25, 120});
+        draw::text(renderer, labels[i], x + 22, y + i * spacing + 5, 2, MUTED);
+        draw::text(renderer, values[i], valueX - draw::textWidth(values[i], 2), y + i * spacing + 5, 2, i == 2 ? CHARACTERS[player.character].color : WHITE);
+    }
+    draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 842, 2, MUTED, true);
 }
 
 void Game::Impl::renderPause()
@@ -3620,6 +4087,12 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
         for (int i = 0; i < 4; ++i) draw::line(renderer, px[i], py[i], px[(i + 1) % 4], py[(i + 1) % 4], enemy.color, 2);
     }
     else renderWorldEntityCircle(viewport, cameraPlayer, enemy.x, enemy.y, enemy.radius, enemy.color, 9);
+
+    if (enemy.poisonTimer > 0.0f)
+    {
+        draw::circle(renderer, x, y, radius + 7, GREEN);
+        draw::fillCircle(renderer, x + radius / 2, y - radius / 2, 3, withAlpha(GREEN, 190));
+    }
 
     if (enemy.hp < enemy.maxHp)
     {
@@ -3736,7 +4209,7 @@ void Game::Impl::renderBoss(const Viewport& viewport, const Player& cameraPlayer
             {
                 if (boss.memoryFlashDirection == -2) return GOLD;
                 if (boss.memoryFlashDirection == direction)
-                    return boss.memoryState == 2 ? CYAN : RED;
+                    return boss.memoryState == 1 ? GREEN : (boss.memoryState == 2 ? CYAN : RED);
             }
             return body;
         };
@@ -3770,7 +4243,8 @@ void Game::Impl::renderBoss(const Viewport& viewport, const Player& cameraPlayer
     {
         const int width = radius * 3;
         const int height = radius * 2;
-        draw::panel(renderer, x - width / 2, y - height / 2, width, height, body, {5, 12, 25, 230});
+        draw::panel(renderer, x - width / 2, y - height / 2, width, height, body,
+                    boss.phase >= 2 ? Color{1, 1, 3, 245} : Color{5, 12, 25, 230});
         draw::outlineRect(renderer, x - width / 2 + 13, y - height / 2 + 13, width - 26, height - 26, withAlpha(WHITE, 55), 2);
         const int scan = x - width / 2 + 16 + static_cast<int>(std::fmod(lastTick / 1000.0f, 1.0f) * (width - 32));
         draw::line(renderer, scan, y - height / 2 + 16, scan, y + height / 2 - 16, withAlpha(CYAN, 90), 3);
@@ -3979,6 +4453,38 @@ void Game::Impl::renderAvatar(int x, int y, int radius, Color colorValue, int sk
     }
 }
 
+void Game::Impl::renderCharacterEffects(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int)
+{
+    if (player.hp <= 0.0f) return;
+    const Vec2 point = toScreen(viewport, cameraPlayer, player.x, player.y);
+    const int x = static_cast<int>(point.x);
+    const int y = static_cast<int>(point.y);
+    if (player.poisonAreaTimer > 0.0f)
+    {
+        draw::ellipse(renderer, x, y, 235, 150, withAlpha(GREEN, 135), 4);
+        draw::ellipse(renderer, x, y, 205, 130, withAlpha(GREEN, 55), 2);
+    }
+    if (player.shieldTimer > 0.0f)
+    {
+        const int pulse = 35 + static_cast<int>(std::sin(lastTick / 90.0f) * 3.0f);
+        draw::glowCircle(renderer, x, y, pulse, withAlpha(WHITE, 90), qualityGlow(14));
+        draw::circle(renderer, x, y, pulse, WHITE);
+    }
+    if (player.droneTimer > 0.0f)
+    {
+        const float droneWorldX = player.x + std::cos(player.droneAngle) * 58.0f;
+        const float droneWorldY = player.y + std::sin(player.droneAngle) * 42.0f - 22.0f;
+        const Vec2 drone = toScreen(viewport, cameraPlayer, droneWorldX, droneWorldY);
+        draw::glowCircle(renderer, static_cast<int>(drone.x), static_cast<int>(drone.y), 10, GOLD, qualityGlow(8));
+        draw::circle(renderer, static_cast<int>(drone.x), static_cast<int>(drone.y), 13, WHITE);
+        if (player.droneBeamTimer > 0.0f)
+        {
+            const Vec2 target = toScreen(viewport, cameraPlayer, player.droneTargetX, player.droneTargetY);
+            draw::line(renderer, static_cast<int>(drone.x), static_cast<int>(drone.y), static_cast<int>(target.x), static_cast<int>(target.y), GOLD, 4);
+        }
+    }
+}
+
 void Game::Impl::renderPlayer(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index)
 {
     const Vec2 point = toScreen(viewport, cameraPlayer, player.x, player.y);
@@ -4030,10 +4536,16 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
     draw::text(renderer, "INTEGRIDADE", leftX + 15, barsY + 10, 1, MUTED);
     draw::fillRect(renderer, leftX + 15, barsY + 29, leftWidth - 30, 8, {30, 35, 50, 220});
     draw::fillRect(renderer, leftX + 15, barsY + 29, static_cast<int>((leftWidth - 30) * std::max(0.0f, player.hp / player.maxHp)), 8, {255, 88, 55, 255});
-    draw::text(renderer, std::string("HABILIDADE [") + buttonName(player.keys[ActionSkill]) + "]", leftX + 15, barsY + 48, 1, MUTED);
+    draw::text(renderer, std::string("HABILIDADE LV.") + number(player.skillLevel) + " [" + buttonName(player.keys[ActionSkill]) + "]", leftX + 15, barsY + 48, 1, MUTED);
     draw::fillRect(renderer, leftX + 15, barsY + 69, leftWidth - 30, 8, {30, 35, 50, 220});
-    float skillRatio = player.timeStop > 0.0f ? player.timeStop / player.skillDuration : 1.0f - player.skillCooldown / player.skillCooldownMax;
-    draw::fillRect(renderer, leftX + 15, barsY + 69, static_cast<int>((leftWidth - 30) * clampf(skillRatio, 0.0f, 1.0f)), 8, player.timeStop > 0.0f ? RED : player.color);
+    float activeDuration = player.timeStop;
+    if (player.character == CharacterDamageArea) activeDuration = player.poisonAreaTimer;
+    else if (player.character == CharacterShield) activeDuration = player.shieldTimer;
+    else if (player.character == CharacterDrone) activeDuration = player.droneTimer;
+    float skillRatio = player.character == CharacterVampire ? player.souls / 50.0f :
+        (activeDuration > 0.0f ? activeDuration / std::max(0.01f, player.skillDuration) : 1.0f - player.skillCooldown / std::max(0.01f, player.skillCooldownMax));
+    draw::fillRect(renderer, leftX + 15, barsY + 69, static_cast<int>((leftWidth - 30) * clampf(skillRatio, 0.0f, 1.0f)), 8,
+                   activeDuration > 0.0f ? RED : CHARACTERS[player.character].color);
 
     if (viewport.w >= 620)
     {
@@ -4053,7 +4565,7 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
         const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(player.damageCost) + " G";
         draw::text(renderer, damagePrice, shopX + 385 - draw::textWidth(damagePrice, 1), shopY + 67, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
-        draw::text(renderer, "HABILIDADE", shopX + 170, shopY + 95, 1, WHITE);
+        draw::text(renderer, "HABILIDADE LV." + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
         const std::string skillPrice = number(player.skillCost) + " G";
         draw::text(renderer, skillPrice, shopX + 385 - draw::textWidth(skillPrice, 1), shopY + 95, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionBuyGrenade]) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
@@ -4132,7 +4644,12 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         const int size = graphicsQuality == GraphicsQuality::High && i % 9 == 0 ? 3 : 2;
         draw::fillRect(renderer, x, y, size, size, star);
     }
-    if (anyTimeStop()) draw::fillRect(renderer, viewport.x, viewport.y, viewport.w, viewport.h, {0, 100, 220, 18});
+    if (anyTimeStop())
+    {
+        draw::outlineRect(renderer, viewport.x + 3, viewport.y + 3, viewport.w - 6, viewport.h - 6, withAlpha(CYAN, 125), 4);
+        for (int y = viewport.y + 8; y < viewport.y + viewport.h; y += 18)
+            draw::fillRect(renderer, viewport.x, y, viewport.w, 1, {0, 130, 220, 18});
+    }
 
     const int grid = 80;
     const float leftWorld = cameraPlayer.cameraX - viewport.w * 0.5f;
@@ -4264,7 +4781,22 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         else renderWorldEntityCircle(viewport, cameraPlayer, projectile.x, projectile.y, projectile.radius, projectile.color, projectile.kind == ProjectileDebris ? 14 : 8);
     }
     for (unsigned i = 0; i < enemies.size(); ++i) renderEnemy(viewport, cameraPlayer, enemies[i]);
+    for (unsigned i = 0; i < souls.size(); ++i)
+    {
+        const Vec2 soul = toScreen(viewport, cameraPlayer, souls[i].x, souls[i].y);
+        const int sx = static_cast<int>(soul.x);
+        const int sy = static_cast<int>(soul.y);
+        draw::fillRect(renderer, sx - 8, sy - 8, 16, 16, WHITE);
+        draw::fillRect(renderer, sx - 4, sy - 2, 3, 4, BG);
+        draw::fillRect(renderer, sx + 2, sy - 2, 3, 4, BG);
+    }
+    for (unsigned i = 0; i < lifeStreams.size(); ++i)
+    {
+        const Vec2 stream = toScreen(viewport, cameraPlayer, lifeStreams[i].x, lifeStreams[i].y);
+        draw::glowCircle(renderer, static_cast<int>(stream.x), static_cast<int>(stream.y), 7, PINK, qualityGlow(8));
+    }
     renderBoss(viewport, cameraPlayer);
+    for (int i = 0; i < playerCount; ++i) renderCharacterEffects(viewport, cameraPlayer, players[i], i);
     for (int i = 0; i < playerCount; ++i) renderPlayer(viewport, cameraPlayer, players[i], i);
     renderFloatingTexts(viewport, cameraPlayer);
 
@@ -4313,30 +4845,38 @@ void Game::Impl::renderPlaying()
     {
         const char* bossNames[BossCount] = {"NEXO X", "QUADRADO FRAGMENTADO", "TRIANGULO", "CIRCULO CINETICO", "DIRECIONAL", "TOUCHPAD TEMPORAL"};
         float ratio = 0.0f;
+        float currentHp = 0.0f;
+        float maximumHp = 1.0f;
         if (boss.phase == 1)
         {
-            float hp = 0.0f;
-            float maxHp = 0.0f;
             for (int i = 0; i < 3; ++i)
             {
-                hp += boss.weapons[i].hp;
-                maxHp += boss.weapons[i].maxHp;
+                currentHp += boss.weapons[i].hp;
+                maximumHp += boss.weapons[i].maxHp;
             }
-            ratio = maxHp > 0.0f ? hp / maxHp : 0.0f;
+            maximumHp -= 1.0f;
+            ratio = maximumHp > 0.0f ? currentHp / maximumHp : 0.0f;
         }
         else if (boss.phase == 2 && boss.shape == BossSquare)
         {
-            float hp = 0.0f;
-            float maxHp = 0.0f;
-            for (int i = 0; i < 4; ++i) { hp += boss.parts[i].hp; maxHp += boss.parts[i].maxHp; }
-            ratio = maxHp > 0.0f ? hp / maxHp : 0.0f;
+            currentHp = 0.0f;
+            maximumHp = 0.0f;
+            for (int i = 0; i < 4; ++i) { currentHp += boss.parts[i].hp; maximumHp += boss.parts[i].maxHp; }
+            ratio = maximumHp > 0.0f ? currentHp / maximumHp : 0.0f;
         }
-        else if (boss.phase == 2) ratio = boss.hp / boss.maxHp;
-        else if (boss.shape == BossDpad && boss.memoryState < 4) ratio = 1.0f - (boss.memoryRound - 1) / 4.0f;
-        else ratio = boss.rageHp / boss.maxRageHp;
+        else if (boss.phase == 2) { currentHp = boss.hp; maximumHp = boss.maxHp; ratio = boss.hp / boss.maxHp; }
+        else if (boss.shape == BossDpad && boss.memoryState < 4)
+        {
+            ratio = 1.0f - (boss.memoryRound - 1) / 4.0f;
+            maximumHp = boss.maxRageHp;
+            currentHp = maximumHp * ratio;
+        }
+        else { currentHp = boss.rageHp; maximumHp = boss.maxRageHp; ratio = boss.rageHp / boss.maxRageHp; }
         draw::fillRect(renderer, 600, 70, 720, 42, {0, 0, 0, 205});
         draw::outlineRect(renderer, 600, 70, 720, 42, RED, 2);
         draw::fillRect(renderer, 610, 82, static_cast<int>(700 * clampf(ratio, 0.0f, 1.0f)), 18, boss.phase == 3 ? RED : boss.trueColor);
+        const std::string hpText = number(static_cast<int>(std::ceil(std::max(0.0f, currentHp)))) + "/" + number(static_cast<int>(std::ceil(maximumHp)));
+        draw::text(renderer, hpText, SCREEN_W / 2, 84, 1, WHITE, true);
         draw::text(renderer, std::string(bossNames[boss.shape]) + "  -  FASE " + number(boss.phase), SCREEN_W / 2, 119, 2, RED, true);
 
         if (boss.shape == BossDpad && boss.phase == 3 && boss.memoryState < 4)
@@ -4377,6 +4917,7 @@ void Game::Impl::render()
         case Screen::Paused: renderPause(); break;
         case Screen::Controls: renderControls(); break;
         case Screen::Shop: renderShop(); break;
+        case Screen::Stats: renderStats(); break;
         case Screen::GameOver: renderGameOver(); break;
     }
     if (noticeTimer > 0.0f && !noticeText.empty())

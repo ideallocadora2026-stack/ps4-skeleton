@@ -323,16 +323,17 @@ void AudioEngine::Impl::mixVoiceList(std::vector<Voice>& voices, float* output, 
             continue;
         }
         const Sample& sample = samples[voice.effect];
+        const float voiceVolume = volume * (voice.effect == static_cast<int>(SoundEffect::PlayerDamage) ? 1.45f : 1.0f);
         const uint64_t remaining = sample.frames > voice.frame ? sample.frames - voice.frame : 0;
         const uint64_t frames = std::min<uint64_t>(remaining, BUFFER_FRAMES);
         for (uint64_t frame = 0; frame < frames; ++frame)
         {
             if (stereo)
             {
-                output[frame * 2] += sample.stereo[(voice.frame + frame) * 2] * volume;
-                output[frame * 2 + 1] += sample.stereo[(voice.frame + frame) * 2 + 1] * volume;
+                output[frame * 2] += sample.stereo[(voice.frame + frame) * 2] * voiceVolume;
+                output[frame * 2 + 1] += sample.stereo[(voice.frame + frame) * 2 + 1] * voiceVolume;
             }
-            else output[frame] += sample.mono[voice.frame + frame] * volume;
+            else output[frame] += sample.mono[voice.frame + frame] * voiceVolume;
         }
         voice.frame += frames;
         if (voice.frame >= sample.frames) voices.erase(voices.begin() + voiceIndex);
