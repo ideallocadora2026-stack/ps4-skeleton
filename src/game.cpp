@@ -81,7 +81,8 @@ enum class DropType
 {
     Gold,
     Silver,
-    Heart
+    Heart,
+    Skull
 };
 
 enum Action
@@ -118,7 +119,7 @@ enum CharacterType
     CharacterShield,
     CharacterDrone,
     CharacterVampire,
-    CharacterManipulator,
+    CharacterDwarfElf,
     CharacterCount
 };
 
@@ -181,7 +182,7 @@ const CharacterItem CHARACTERS[CharacterCount] = {
     {"SHIELD", "ESCUDO POR 10S", 1000, WHITE},
     {"THE DRONE", "DRONE DE COMBATE", 1000, GOLD},
     {"VAMPIRE", "ROUBA 90% DE VIDA", 1000, PINK},
-    {"THE MANIPULATOR", "CONVERTE 3 INIMIGOS", 1000, PURPLE}
+    {"DWARF ELF", "TRANSMUTA ATE 10 INIMIGOS", 1000, GOLD}
 };
 
 struct PlayerSettings
@@ -289,6 +290,7 @@ struct Player
     int grenades;
     int character;
     int souls;
+    float instaKillTimer;
     float poisonAreaTimer;
     float shieldTimer;
     float droneTimer;
@@ -317,6 +319,12 @@ int vampireSoulRequirement(const Player& player)
 float vampireDamageReduction(const Player& player)
 {
     return static_cast<float>(std::max(0, player.skillLevel - 1) * 2);
+}
+
+float playerShotDamage(const Player& player)
+{
+    const float baseDamage = player.character == CharacterDwarfElf ? 15.0f : 20.0f;
+    return baseDamage * player.damageMultiplier;
 }
 
 struct Projectile
@@ -357,26 +365,6 @@ struct Enemy
     float burnTimer;
     float burnVisualTimer;
     int burnOwner;
-    int botCreditOwner;
-    int botCreditSlot;
-};
-
-struct FriendlyBot
-{
-    bool active;
-    int owner;
-    int slot;
-    float x;
-    float y;
-    float hp;
-    float maxHp;
-    float speed;
-    float radius;
-    float angle;
-    float attackTimer;
-    int killProgress;
-    int storedSilver;
-    Color color;
 };
 
 struct FireArea
@@ -413,6 +401,8 @@ struct Drop
     float life;
     float phase;
     DropType type;
+    int value;
+    float scale;
 };
 
 struct Particle
@@ -662,7 +652,7 @@ struct Game::Impl
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
           menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
           musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false),
-          intermissionActive(false), combatCleanupPending(false), portalCharge(0.0f), statsBotIndex(0),
+          intermissionActive(false), combatCleanupPending(false), portalCharge(0.0f),
           backdropCacheQuality(-1), playingCacheQuality(-1), playingCacheLayout(-1),
           playingCacheDriftX(1000000), playingCacheDriftY(1000000)
     {
@@ -672,7 +662,6 @@ struct Game::Impl
         std::memset(activeSkins, 0, sizeof(activeSkins));
         std::memset(activeHats, 0, sizeof(activeHats));
         std::memset(activeCharacters, 0, sizeof(activeCharacters));
-        std::memset(friendlyBots, 0, sizeof(friendlyBots));
         resetSettings();
     }
 
@@ -752,7 +741,6 @@ struct Game::Impl
     bool intermissionActive;
     bool combatCleanupPending;
     float portalCharge;
-    int statsBotIndex;
     std::vector<uint32_t> backdropCache;
     int backdropCacheQuality;
     std::vector<uint32_t> playingBackgroundCache;
@@ -771,7 +759,6 @@ struct Game::Impl
     std::vector<LifeStream> lifeStreams;
     std::vector<FireArea> fireAreas;
     std::vector<Wall> walls;
-    FriendlyBot friendlyBots[4][3];
     Boss boss;
 
     bool initialize();
@@ -828,13 +815,10 @@ struct Game::Impl
     void updateCharacterAbilities(float dt);
     void updateSouls(float dt);
     void fireCompanionDrone(Player& player, int playerIndex);
-    void manipulateEnemies(Player& player, int playerIndex);
-    void updateFriendlyBots(float dt);
-    void repairFriendlyBot(Player& player, int playerIndex, int slot);
-    void collectBotSilver(Player& player, int playerIndex);
+    void transmuteNearbyEnemies(Player& player, int playerIndex);
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
     void addFloatingText(float x, float y, const std::string& text, Color color);
-    void addDrop(float x, float y, DropType type);
+    void addDrop(float x, float y, DropType type, int value = 1, float scale = 1.0f);
     void rewardDefeatedEnemy(const Enemy& enemy, int owner);
     void damagePlayer(Player& player, float damage);
     void buyUpgrade(Player& player, int type);
@@ -1629,13 +1613,6 @@ void Game::Impl::updateStats(float)
     for (int i = 0; i < playerCount; ++i) if (players[i].pad == pausePad) { playerIndex = i; break; }
     Player& player = players[playerIndex];
     if (pressed(pausePad, PAD_CIRCLE) || pressed(pausePad, player.keys[ActionStats])) screen = Screen::Playing;
-    if (player.character == CharacterManipulator)
-    {
-        if (pressed(pausePad, PAD_UP)) statsBotIndex = (statsBotIndex + 2) % 3;
-        if (pressed(pausePad, PAD_DOWN)) statsBotIndex = (statsBotIndex + 1) % 3;
-        if (pressed(pausePad, PAD_CROSS)) repairFriendlyBot(player, playerIndex, statsBotIndex);
-        if (pressed(pausePad, PAD_SQUARE)) collectBotSilver(player, playerIndex);
-    }
 }
 
 void Game::Impl::updateLobby(float dt)
@@ -1668,7 +1645,6 @@ void Game::Impl::resetWorld()
     lifeStreams.clear();
     fireAreas.clear();
     walls.clear();
-    std::memset(friendlyBots, 0, sizeof(friendlyBots));
     std::memset(&boss, 0, sizeof(boss));
     mapMinX = 0.0f;
     mapMinY = 0.0f;
@@ -1682,7 +1658,6 @@ void Game::Impl::resetWorld()
     intermissionActive = false;
     combatCleanupPending = false;
     portalCharge = 0.0f;
-    statsBotIndex = 0;
     cameraShake = 0.0f;
     totalKills = 0;
     enemyEdges = 0;
@@ -1736,6 +1711,7 @@ void Game::Impl::startGame(int count)
         player.hat = activeHats[slot];
         player.character = activeCharacters[slot];
         player.souls = 0;
+        player.instaKillTimer = 0.0f;
         player.poisonAreaTimer = 0.0f;
         player.shieldTimer = 0.0f;
         player.droneTimer = 0.0f;
@@ -1775,6 +1751,7 @@ bool Game::Impl::skillReady(const Player& player) const
 void Game::Impl::configureCharacter(Player& player)
 {
     const float levelBonus = std::max(0, player.skillLevel - 1) * 0.5f;
+    player.radius = player.character == CharacterDwarfElf ? 14.0f : 18.0f;
     if (player.character == CharacterDamageArea)
     {
         player.skillDuration = 3.0f + levelBonus;
@@ -1796,10 +1773,10 @@ void Game::Impl::configureCharacter(Player& player)
         player.skillCooldownMax = 1.0f;
         player.souls = std::min(player.souls, vampireSoulRequirement(player));
     }
-    else if (player.character == CharacterManipulator)
+    else if (player.character == CharacterDwarfElf)
     {
         player.skillDuration = 0.0f;
-        player.skillCooldownMax = std::max(10.0f, 50.0f - (player.skillLevel - 1) * 2.0f);
+        player.skillCooldownMax = std::max(10.0f, 40.0f - (player.skillLevel - 1) * 1.5f);
     }
     else
     {
@@ -1853,9 +1830,9 @@ void Game::Impl::activateSkill(Player& player, int playerIndex)
         player.souls = 0;
         addFloatingText(target.x, target.y - 30.0f, "VIDA CONVERTIDA", PINK);
     }
-    else if (player.character == CharacterManipulator)
+    else if (player.character == CharacterDwarfElf)
     {
-        manipulateEnemies(player, playerIndex);
+        transmuteNearbyEnemies(player, playerIndex);
         return;
     }
     else
@@ -1912,163 +1889,37 @@ void Game::Impl::fireCompanionDrone(Player& player, int playerIndex)
     player.droneBeamTimer = 0.16f;
 }
 
-void Game::Impl::manipulateEnemies(Player& player, int playerIndex)
+void Game::Impl::transmuteNearbyEnemies(Player& player, int)
 {
+    const float rangeSquared = 520.0f * 520.0f;
     int converted = 0;
-    for (int slot = 0; slot < 3; ++slot)
+    while (converted < 10)
     {
-        FriendlyBot& bot = friendlyBots[playerIndex][slot];
-        if (bot.active) continue;
         int nearestIndex = -1;
-        float nearest = 1e30f;
+        float nearest = rangeSquared;
         for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
         {
-            if (enemies[i].kind == 1) continue;
             const float d = distanceSquared(player.x, player.y, enemies[i].x, enemies[i].y);
             if (d < nearest) { nearest = d; nearestIndex = i; }
         }
         if (nearestIndex < 0) break;
         const Enemy source = enemies[nearestIndex];
-        bot.active = true;
-        bot.owner = playerIndex;
-        bot.slot = slot;
-        bot.x = source.x;
-        bot.y = source.y;
-        bot.hp = source.maxHp;
-        bot.maxHp = source.maxHp;
-        bot.speed = std::max(180.0f, source.speed * 0.9f);
-        bot.radius = std::max(13.0f, source.radius);
-        bot.angle = source.angle;
-        bot.attackTimer = 0.15f * slot;
-        bot.color = player.color;
+        const DropType coinType = random01() < 0.5f ? DropType::Gold : DropType::Silver;
+        addDrop(source.x, source.y, coinType, 2, 1.6f);
+        addParticles(source.x, source.y, coinType == DropType::Gold ? GOLD : SILVER, 22, 310.0f, 0.85f);
+        addFloatingText(source.x, source.y - 28.0f, coinType == DropType::Gold ? "MOEDA GRANDE 2G" : "MOEDA GRANDE 2S", coinType == DropType::Gold ? GOLD : SILVER);
         enemies.erase(enemies.begin() + nearestIndex);
-        addParticles(bot.x, bot.y, PURPLE, 26, 300.0f, 0.9f);
-        addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " CONVERTIDO", PURPLE);
         ++converted;
     }
     if (converted == 0)
     {
-        addFloatingText(player.x, player.y - 34.0f, "SEM ESPACO OU ALVO", MUTED);
+        addFloatingText(player.x, player.y - 34.0f, "SEM INIMIGOS PROXIMOS", MUTED);
         return;
     }
     player.skillCooldown = player.skillCooldownMax;
+    addFloatingText(player.x, player.y - 42.0f, "TRANSMUTADOS: " + number(converted), GOLD);
+    addParticles(player.x, player.y, GOLD, 54, 460.0f, 1.1f);
     rumble(player.pad, 0.65f, 420);
-}
-
-void Game::Impl::repairFriendlyBot(Player& player, int playerIndex, int slot)
-{
-    if (slot < 0 || slot >= 3) return;
-    FriendlyBot& bot = friendlyBots[playerIndex][slot];
-    if (!bot.active) { showNotice("BOT " + number(slot + 1) + " INATIVO"); return; }
-    if (bot.hp >= bot.maxHp) { showNotice("BOT COM VIDA CHEIA"); return; }
-    if (player.coins < 5) { showNotice("G INSUFICIENTE"); return; }
-    player.coins -= 5;
-    const float restored = bot.maxHp * 0.5f;
-    bot.hp = std::min(bot.maxHp, bot.hp + restored);
-    addParticles(bot.x, bot.y, GREEN, 18, 220.0f, 0.7f);
-    showNotice("BOT " + number(slot + 1) + " REPARADO");
-}
-
-void Game::Impl::collectBotSilver(Player& player, int playerIndex)
-{
-    int total = 0;
-    for (int slot = 0; slot < 3; ++slot)
-    {
-        total += friendlyBots[playerIndex][slot].storedSilver;
-        friendlyBots[playerIndex][slot].storedSilver = 0;
-    }
-    if (total <= 0)
-    {
-        showNotice("CAIXAS DOS BOTS VAZIAS");
-        return;
-    }
-    profileSilver += total;
-    profileDirty = true;
-    saveProfile(false);
-    addFloatingText(player.x, player.y - 54.0f, "+" + number(total) + " SILVER COLETADO", SILVER);
-    showNotice("COLETAR TUDO: +" + number(total) + " SILVER");
-    rumble(player.pad, 0.55f, 320);
-}
-
-void Game::Impl::updateFriendlyBots(float dt)
-{
-    for (int owner = 0; owner < playerCount; ++owner)
-    {
-        for (int slot = 0; slot < 3; ++slot)
-        {
-            FriendlyBot& bot = friendlyBots[owner][slot];
-            if (!bot.active) continue;
-            bot.attackTimer = std::max(0.0f, bot.attackTimer - dt);
-            bot.angle += dt * 2.8f;
-            int enemyIndex = -1;
-            float nearest = 1e30f;
-            float targetX = players[owner].x + std::cos(slot * PI * 2.0f / 3.0f) * 64.0f;
-            float targetY = players[owner].y + std::sin(slot * PI * 2.0f / 3.0f) * 64.0f;
-            bool bossTarget = false;
-            int bossSubTarget = -1;
-            for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
-            {
-                const float d = distanceSquared(bot.x, bot.y, enemies[i].x, enemies[i].y);
-                if (d < nearest) { nearest = d; enemyIndex = i; targetX = enemies[i].x; targetY = enemies[i].y; }
-            }
-            if (enemyIndex < 0 && boss.active)
-            {
-                bossTarget = true;
-                if (boss.phase == 1)
-                {
-                    for (int weapon = 0; weapon < 3; ++weapon)
-                    {
-                        if (!boss.weapons[weapon].active) continue;
-                        float wx, wy;
-                        bossWeaponPosition(weapon, wx, wy);
-                        const float d = distanceSquared(bot.x, bot.y, wx, wy);
-                        if (d < nearest) { nearest = d; bossSubTarget = weapon; targetX = wx; targetY = wy; }
-                    }
-                }
-                else if (boss.phase == 2 && boss.shape == BossSquare)
-                {
-                    for (int part = 0; part < 4; ++part)
-                    {
-                        if (!boss.parts[part].active) continue;
-                        const float d = distanceSquared(bot.x, bot.y, boss.parts[part].x, boss.parts[part].y);
-                        if (d < nearest) { nearest = d; bossSubTarget = part; targetX = boss.parts[part].x; targetY = boss.parts[part].y; }
-                    }
-                }
-                else { targetX = boss.x; targetY = boss.y; nearest = distanceSquared(bot.x, bot.y, targetX, targetY); }
-            }
-            const float targetDistance = std::sqrt(std::max(0.0f, distanceSquared(bot.x, bot.y, targetX, targetY)));
-            if (targetDistance > 45.0f)
-            {
-                const float direction = angleTo(bot.x, bot.y, targetX, targetY);
-                bot.x += std::cos(direction) * bot.speed * dt;
-                bot.y += std::sin(direction) * bot.speed * dt;
-                resolveWalls(bot.x, bot.y, bot.radius);
-                bot.x = clampf(bot.x, mapMinX + bot.radius, mapMaxX - bot.radius);
-                bot.y = clampf(bot.y, mapMinY + bot.radius, mapMaxY - bot.radius);
-            }
-            else if (bot.attackTimer <= 0.0f && (enemyIndex >= 0 || bossTarget))
-            {
-                bot.attackTimer = 0.45f;
-                if (enemyIndex >= 0 && enemyIndex < static_cast<int>(enemies.size()))
-                {
-                    Enemy& target = enemies[enemyIndex];
-                    target.hp -= 6.0f;
-                    target.botCreditOwner = owner;
-                    target.botCreditSlot = slot;
-                    addParticles(target.x, target.y, PURPLE, 3, 120.0f, 0.35f);
-                    if (target.hp <= 0.0f)
-                    {
-                        const Enemy defeated = target;
-                        rewardDefeatedEnemy(defeated, owner);
-                        enemies.erase(enemies.begin() + enemyIndex);
-                    }
-                }
-                else if (boss.phase == 1 && bossSubTarget >= 0) damageBoss(6.0f, bossSubTarget);
-                else if (boss.phase == 2 && boss.shape == BossSquare && bossSubTarget >= 0) damageBossPart(bossSubTarget, 6.0f);
-                else damageBoss(6.0f, -1);
-            }
-        }
-    }
 }
 
 void Game::Impl::updateCharacterAbilities(float dt)
@@ -2172,34 +2023,21 @@ void Game::Impl::addFloatingText(float x, float y, const std::string& textValue,
     floatingTexts.push_back(message);
 }
 
-void Game::Impl::addDrop(float x, float y, DropType type)
+void Game::Impl::addDrop(float x, float y, DropType type, int value, float scale)
 {
     Drop drop;
     drop.x = x;
     drop.y = y;
-    drop.life = type == DropType::Heart ? 12.0f : 9.0f;
+    drop.life = type == DropType::Skull ? 15.0f : (type == DropType::Heart ? 12.0f : 9.0f);
     drop.phase = random01() * PI * 2.0f;
     drop.type = type;
+    drop.value = std::max(1, value);
+    drop.scale = std::max(0.5f, scale);
     drops.push_back(drop);
 }
 
 void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
 {
-    if (enemy.botCreditOwner >= 0 && enemy.botCreditOwner < playerCount &&
-        enemy.botCreditSlot >= 0 && enemy.botCreditSlot < 3)
-    {
-        FriendlyBot& creditedBot = friendlyBots[enemy.botCreditOwner][enemy.botCreditSlot];
-        ++creditedBot.killProgress;
-        if (creditedBot.killProgress >= 2)
-        {
-            creditedBot.killProgress -= 2;
-            ++creditedBot.storedSilver;
-            addFloatingText(enemy.x, enemy.y - 42.0f,
-                            "BOT " + number(enemy.botCreditSlot + 1) + " CAIXA +1S", SILVER);
-        }
-        else addFloatingText(enemy.x, enemy.y - 42.0f,
-                             "BOT " + number(enemy.botCreditSlot + 1) + "  1/2", SILVER);
-    }
     if (enemy.kind == 1)
     {
         addDrop(enemy.x, enemy.y, DropType::Heart);
@@ -2214,6 +2052,12 @@ void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
     {
         players[owner].score += 10;
         players[owner].kills++;
+        if (players[owner].kills % 75 == 0)
+        {
+            addDrop(enemy.x, enemy.y, DropType::Skull, 1, 1.35f);
+            addFloatingText(enemy.x, enemy.y - 46.0f, "POWER-UP INSTA-KILL", CYAN);
+            showNotice("CAVEIRA NEON DO JOGADOR " + number(owner + 1));
+        }
         if (enemy.kind == 0 && players[owner].character == CharacterVampire)
         {
             Soul soul = {enemy.x, enemy.y, owner, 5.0f};
@@ -2269,8 +2113,6 @@ void Game::Impl::spawnEnemy()
     enemy.burnTimer = 0.0f;
     enemy.burnVisualTimer = 0.0f;
     enemy.burnOwner = -1;
-    enemy.botCreditOwner = -1;
-    enemy.botCreditSlot = -1;
     enemies.push_back(enemy);
 }
 
@@ -2397,8 +2239,6 @@ void Game::Impl::spawnBossDrone()
     drone.burnTimer = 0.0f;
     drone.burnVisualTimer = 0.0f;
     drone.burnOwner = -1;
-    drone.botCreditOwner = -1;
-    drone.botCreditSlot = -1;
     enemies.push_back(drone);
     ++boss.droneCount;
 }
@@ -3223,7 +3063,7 @@ void Game::Impl::shoot(Player& player, int playerIndex)
     projectile.vx = std::cos(angle) * 820.0f;
     projectile.vy = std::sin(angle) * 820.0f;
     projectile.radius = 5.0f;
-    projectile.damage = 20.0f * player.damageMultiplier;
+    projectile.damage = playerShotDamage(player);
     projectile.owner = playerIndex;
     projectile.color = player.color;
     projectile.trailCount = 0;
@@ -3753,7 +3593,14 @@ void Game::Impl::handleProjectileCollisions(float dt)
                 Enemy& enemy = enemies[e];
                 const float radius = projectile.radius + enemy.radius;
                 if (distanceSquared(projectile.x, projectile.y, enemy.x, enemy.y) > radius * radius) continue;
-                enemy.hp -= projectile.damage;
+                const bool instaKill = projectile.owner >= 0 && projectile.owner < playerCount &&
+                    players[projectile.owner].instaKillTimer > 0.0f;
+                if (instaKill)
+                {
+                    enemy.hp = 0.0f;
+                    addFloatingText(enemy.x, enemy.y - 28.0f, "INSTA-KILL", CYAN);
+                }
+                else enemy.hp -= projectile.damage;
                 addParticles(projectile.x, projectile.y, enemy.color, 6, 190.0f, 0.45f);
                 if (enemy.hp <= 0.0f)
                 {
@@ -3852,27 +3699,9 @@ void Game::Impl::handleEnemies(float dt)
                     }
                 }
             }
-            FriendlyBot* botTarget = nullptr;
-            if (enemy.kind == 0)
-            {
-                for (int owner = 0; owner < playerCount; ++owner)
-                    for (int slot = 0; slot < 3; ++slot)
-                    {
-                        FriendlyBot& candidate = friendlyBots[owner][slot];
-                        if (!candidate.active) continue;
-                        const float d = distanceSquared(enemy.x, enemy.y, candidate.x, candidate.y);
-                        if (d < nearest) { nearest = d; target = nullptr; botTarget = &candidate; }
-                    }
-            }
             if (target)
             {
                 const float angle = angleTo(enemy.x, enemy.y, target->x, target->y);
-                enemy.x += std::cos(angle) * enemy.speed * dt;
-                enemy.y += std::sin(angle) * enemy.speed * dt;
-            }
-            else if (botTarget)
-            {
-                const float angle = angleTo(enemy.x, enemy.y, botTarget->x, botTarget->y);
                 enemy.x += std::cos(angle) * enemy.speed * dt;
                 enemy.y += std::sin(angle) * enemy.speed * dt;
             }
@@ -3894,31 +3723,6 @@ void Game::Impl::handleEnemies(float dt)
                     enemies.erase(enemies.begin() + i);
                     consumed = true;
                     break;
-                }
-            }
-            if (!consumed)
-            {
-                for (int owner = 0; owner < playerCount && !consumed; ++owner)
-                {
-                    for (int slot = 0; slot < 3; ++slot)
-                    {
-                        FriendlyBot& bot = friendlyBots[owner][slot];
-                        if (!bot.active) continue;
-                        const float radius = enemy.radius + bot.radius;
-                        if (distanceSquared(enemy.x, enemy.y, bot.x, bot.y) > radius * radius) continue;
-                        bot.hp -= enemy.kind == 1 ? 12.0f : 15.0f;
-                        addParticles(enemy.x, enemy.y, PURPLE, 12, 260.0f, 0.7f);
-                        enemies.erase(enemies.begin() + i);
-                        consumed = true;
-                        if (bot.hp <= 0.0f)
-                        {
-                            bot.hp = 0.0f;
-                            bot.active = false;
-                            addParticles(bot.x, bot.y, RED, 28, 360.0f, 1.0f);
-                            addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " DESTRUIDO", RED);
-                        }
-                        break;
-                    }
                 }
             }
         }
@@ -3967,29 +3771,6 @@ void Game::Impl::handleEnemies(float dt)
                     damagePlayer(players[p], projectile.damage);
                     hit = true;
                     break;
-                }
-            }
-            if (!hit)
-            {
-                for (int owner = 0; owner < playerCount && !hit; ++owner)
-                {
-                    for (int slot = 0; slot < 3; ++slot)
-                    {
-                        FriendlyBot& bot = friendlyBots[owner][slot];
-                        if (!bot.active) continue;
-                        const float radius = projectile.radius + bot.radius;
-                        if (distanceSquared(projectile.x, projectile.y, bot.x, bot.y) > radius * radius) continue;
-                        bot.hp -= projectile.damage;
-                        hit = true;
-                        if (bot.hp <= 0.0f)
-                        {
-                            bot.hp = 0.0f;
-                            bot.active = false;
-                            addParticles(bot.x, bot.y, RED, 28, 360.0f, 1.0f);
-                            addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " DESTRUIDO", RED);
-                        }
-                        break;
-                    }
                 }
             }
         }
@@ -4043,38 +3824,50 @@ void Game::Impl::handleDrops(float dt)
                 target = &players[p];
             }
         }
-        const float attraction = drop.type == DropType::Heart ? 200.0f : 160.0f;
+        const float attraction = drop.type == DropType::Skull ? 260.0f : (drop.type == DropType::Heart ? 200.0f : 160.0f);
         if (target && nearest < attraction)
         {
             const float angle = angleTo(drop.x, drop.y, target->x, target->y);
-            const float speed = drop.type == DropType::Heart ? 350.0f : 450.0f;
+            const float speed = drop.type == DropType::Skull ? 390.0f : (drop.type == DropType::Heart ? 350.0f : 450.0f);
             drop.x += std::cos(angle) * speed * dt;
             drop.y += std::sin(angle) * speed * dt;
         }
-        if (target && nearest < target->radius + 13.0f)
+        if (target && nearest < target->radius + 13.0f * drop.scale)
         {
-            if (drop.type == DropType::Gold) target->coins++;
+            if (drop.type == DropType::Gold)
+            {
+                target->coins += drop.value;
+                if (drop.value > 1) addFloatingText(target->x, target->y - 30.0f, "+" + number(drop.value) + "G", GOLD);
+            }
             else if (drop.type == DropType::Silver)
             {
-                profileSilver++;
+                profileSilver += drop.value;
                 profileDirty = true;
                 saveProfile(false);
+                if (drop.value > 1) addFloatingText(target->x, target->y - 30.0f, "+" + number(drop.value) + "S", SILVER);
             }
-            else
+            else if (drop.type == DropType::Heart)
             {
                 const int heal = static_cast<int>(target->maxHp * 0.30f);
                 target->hp = std::min(target->maxHp, target->hp + heal);
                 addFloatingText(target->x, target->y - 30.0f, "+" + number(heal) + " INTEGRIDADE", PINK);
             }
-            if (drop.type == DropType::Heart)
+            else
+            {
+                target->instaKillTimer = 5.0f;
+                addFloatingText(target->x, target->y - 42.0f, "INSTA-KILL 5S", CYAN);
+                showNotice("INSTA-KILL ATIVO POR 5S");
+            }
+            if (drop.type == DropType::Heart || drop.type == DropType::Skull)
                 audio.playController(SoundEffect::Heart, target->pad);
             else
             {
                 audio.playController(coinSoundAlternate ? SoundEffect::Coin2 : SoundEffect::Coin1, target->pad);
                 coinSoundAlternate = !coinSoundAlternate;
             }
-            addParticles(drop.x, drop.y, drop.type == DropType::Heart ? PINK : (drop.type == DropType::Silver ? SILVER : GOLD), 10, 190.0f, 0.5f);
-            rumble(target->pad, 0.2f, 70);
+            const Color pickupColor = drop.type == DropType::Heart ? PINK : (drop.type == DropType::Skull ? CYAN : (drop.type == DropType::Silver ? SILVER : GOLD));
+            addParticles(drop.x, drop.y, pickupColor, drop.type == DropType::Skull ? 34 : 10, drop.type == DropType::Skull ? 360.0f : 190.0f, 0.65f);
+            rumble(target->pad, drop.type == DropType::Skull ? 0.65f : 0.2f, drop.type == DropType::Skull ? 360 : 70);
             drops.erase(drops.begin() + i);
         }
         else if (drop.life <= 0.0f) drops.erase(drops.begin() + i);
@@ -4127,7 +3920,6 @@ void Game::Impl::updatePlaying(float dt)
         if (pressed(players[i].pad, players[i].keys[ActionStats]))
         {
             pausePad = players[i].pad;
-            statsBotIndex = 0;
             screen = Screen::Stats;
             return;
         }
@@ -4145,6 +3937,7 @@ void Game::Impl::updatePlaying(float dt)
         Player& player = players[i];
         if (player.hp <= 0.0f) continue;
         player.invincible = std::max(0.0f, player.invincible - dt);
+        player.instaKillTimer = std::max(0.0f, player.instaKillTimer - dt);
         if (player.timeStop > 0.0f) player.timeStop = std::max(0.0f, player.timeStop - dt);
         if (player.character != CharacterTimeStop || player.timeStop <= 0.0f)
             player.skillCooldown = std::max(0.0f, player.skillCooldown - dt);
@@ -4220,7 +4013,6 @@ void Game::Impl::updatePlaying(float dt)
 
     updateCharacterAbilities(dt);
     updateSouls(dt);
-    updateFriendlyBots(dt);
     updateFireAreas(dt);
 
     if (announcementTimer > 0.0f) announcementTimer -= dt;
@@ -4539,49 +4331,28 @@ void Game::Impl::renderStats()
     draw::text(renderer, "ESTATISTICAS - JOGADOR " + number(playerIndex + 1), SCREEN_W / 2, 215, 4, player.color, true);
     draw::text(renderer, CHARACTERS[player.character].name, SCREEN_W / 2, 270, 2, CHARACTERS[player.character].color, true);
     const int x = 470;
-    const int valueX = player.character == CharacterManipulator ? 990 : 1390;
+    const int valueX = 1390;
     const int y = 350;
     const int spacing = 72;
     const int vampireRequirement = vampireSoulRequirement(player);
     const int vampireResistance = static_cast<int>(vampireDamageReduction(player));
     const std::string vampireStats = number(player.souls) + "/" + number(vampireRequirement) + " ALMAS" +
         (vampireResistance > 0 ? "  DEF -" + number(vampireResistance) : "");
+    const std::string abilityStats = player.character == CharacterVampire ? vampireStats :
+        (player.character == CharacterDwarfElf ? "10 ALVOS / " + oneDecimal(player.skillCooldownMax) + "/S" :
+         oneDecimal(player.skillDuration) + "/S");
     const std::string values[5] = {
         oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
-        oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
-        (player.character == CharacterVampire ? vampireStats :
-         (player.character == CharacterManipulator ? "3 BOTS / " + oneDecimal(player.skillCooldownMax) + "/S" : oneDecimal(player.skillDuration) + "/S")) + "   LV." + number(player.skillLevel),
+        oneDecimal(playerShotDamage(player)) + "   LV." + number(player.damageLevel),
+        abilityStats + "   LV." + number(player.skillLevel),
         number(player.grenades), number(player.kills)
     };
     const char* labels[5] = {"VELOCIDADE DO TIRO", "DANO DO JOGADOR", "HABILIDADE", "GRANADAS", "KILLS"};
     for (int i = 0; i < 5; ++i)
     {
-        const int rowWidth = player.character == CharacterManipulator ? 540 : 860;
-        draw::fillRect(renderer, x, y + i * spacing - 10, rowWidth, 54, i % 2 == 0 ? Color{0, 35, 65, 95} : Color{0, 10, 25, 120});
+        draw::fillRect(renderer, x, y + i * spacing - 10, 860, 54, i % 2 == 0 ? Color{0, 35, 65, 95} : Color{0, 10, 25, 120});
         draw::text(renderer, labels[i], x + 22, y + i * spacing + 5, 2, MUTED);
         draw::text(renderer, values[i], valueX - draw::textWidth(values[i], 2), y + i * spacing + 5, 2, i == 2 ? CHARACTERS[player.character].color : WHITE);
-    }
-    if (player.character == CharacterManipulator)
-    {
-        draw::text(renderer, "NPCS ALIADOS", 1245, 330, 2, PURPLE, true);
-        for (int slot = 0; slot < 3; ++slot)
-        {
-            const FriendlyBot& bot = friendlyBots[playerIndex][slot];
-            const int botY = 375 + slot * 100;
-            const bool selected = statsBotIndex == slot;
-            draw::fillRect(renderer, 1050, botY, 390, 82, selected ? Color{70, 15, 100, 190} : Color{0, 8, 20, 200});
-            draw::outlineRect(renderer, 1050, botY, 390, 82, selected ? GREEN : withAlpha(PURPLE, 120), selected ? 3 : 1);
-            draw::text(renderer, "BOT " + number(slot + 1), 1070, botY + 8, 2, bot.active ? WHITE : MUTED);
-            const std::string botLife = bot.active ? number(static_cast<int>(std::ceil(bot.hp))) + "/" + number(static_cast<int>(std::ceil(bot.maxHp))) : "INATIVO";
-            draw::text(renderer, "CAIXA: " + number(bot.storedSilver) + "S  KILL: " + number(bot.killProgress) + "/2", 1070, botY + 39, 1, SILVER);
-            draw::text(renderer, "VIDA: " + botLife, 1070, botY + 59, 1, bot.active ? GREEN : RED);
-            draw::fillRect(renderer, 1318, botY + 19, 102, 44, GREEN);
-            draw::text(renderer, "X 5G", 1369, botY + 32, 1, BG, true);
-        }
-        draw::fillRect(renderer, 1100, 684, 290, 50, GREEN);
-        draw::outlineRect(renderer, 1100, 684, 290, 50, WHITE, 2);
-        draw::text(renderer, "[" + std::string(buttonName(PAD_SQUARE)) + "] COLETAR TUDO", 1245, 700, 1, BG, true);
-        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 750, 1, MUTED, true);
     }
     draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 910, 2, MUTED, true);
 }
@@ -5083,6 +4854,15 @@ void Game::Impl::renderCharacterEffects(const Viewport& viewport, const Player& 
             draw::line(renderer, static_cast<int>(drone.x), static_cast<int>(drone.y), static_cast<int>(target.x), static_cast<int>(target.y), GOLD, 4);
         }
     }
+    if (player.instaKillTimer > 0.0f)
+    {
+        const int pulse = static_cast<int>(player.radius) + 13 + static_cast<int>((std::sin(lastTick / 55.0f) + 1.0f) * 3.0f);
+        draw::glowCircle(renderer, x, y, pulse, CYAN, qualityGlow(18));
+        draw::circle(renderer, x, y, pulse, WHITE);
+        draw::circle(renderer, x, y, pulse - 1, WHITE);
+        draw::circle(renderer, x, y, pulse + 5, withAlpha(CYAN, 150));
+        draw::circle(renderer, x, y, pulse + 6, withAlpha(CYAN, 110));
+    }
 }
 
 void Game::Impl::renderIntermission(const Viewport& viewport, const Player& cameraPlayer)
@@ -5177,6 +4957,11 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
     draw::text(renderer, "S", leftX + 128, statsY + 72, 2, SILVER);
     draw::text(renderer, number(profileSilver), leftX + 156, statsY + 72, 2, WHITE);
     draw::text(renderer, "GRANADA: " + number(player.grenades) + " [" + buttonName(player.keys[ActionGrenade]) + "]", leftX + 15, statsY + 102, 2, GRENADE_GREEN);
+    if (player.instaKillTimer > 0.0f)
+    {
+        const std::string instaKillText = "INSTA-KILL " + oneDecimal(player.instaKillTimer) + "S";
+        draw::text(renderer, instaKillText, leftX + leftWidth - 15 - draw::textWidth(instaKillText, 1), statsY + 13, 1, CYAN);
+    }
 
     draw::fillRect(renderer, leftX, barsY, leftWidth, barsHeight, {2, 6, 20, 230});
     draw::outlineRect(renderer, leftX, barsY, leftWidth, barsHeight, withAlpha(CYAN, 45), 1);
@@ -5330,20 +5115,46 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
 
     for (unsigned i = 0; i < drops.size(); ++i)
     {
-        const float bob = std::sin(drops[i].phase) * 3.0f;
-        const Color dropColor = drops[i].type == DropType::Heart ? PINK : (drops[i].type == DropType::Silver ? SILVER : GOLD);
+        const float scale = drops[i].scale;
+        const float bob = std::sin(drops[i].phase) * 3.0f * scale;
+        const Color dropColor = drops[i].type == DropType::Skull ? CYAN :
+            (drops[i].type == DropType::Heart ? PINK : (drops[i].type == DropType::Silver ? SILVER : GOLD));
         const Vec2 point = toScreen(viewport, cameraPlayer, drops[i].x, drops[i].y + bob);
-        if (drops[i].type == DropType::Heart)
+        if (drops[i].type == DropType::Skull)
         {
-            const int pulse = 12 + static_cast<int>(std::sin(drops[i].phase * 2.0f) * 2.0f);
+            const int skullSize = std::max(10, static_cast<int>((13.0f + std::sin(drops[i].phase * 2.0f) * 1.5f) * scale));
+            const int sx = static_cast<int>(point.x);
+            const int sy = static_cast<int>(point.y);
+            draw::glowCircle(renderer, sx, sy - skullSize / 5, skullSize + 7, CYAN, qualityGlow(20));
+            draw::fillCircle(renderer, sx, sy - skullSize / 4, skullSize, CYAN);
+            draw::fillRect(renderer, sx - skullSize * 2 / 3, sy + skullSize / 4, skullSize * 4 / 3, skullSize * 3 / 4, CYAN);
+            draw::fillCircle(renderer, sx - skullSize / 3, sy - skullSize / 4, std::max(2, skullSize / 4), BG);
+            draw::fillCircle(renderer, sx + skullSize / 3, sy - skullSize / 4, std::max(2, skullSize / 4), BG);
+            draw::triangle(renderer, sx, sy, sx - std::max(2, skullSize / 7), sy + skullSize / 4,
+                           sx + std::max(2, skullSize / 7), sy + skullSize / 4, BG);
+            for (int tooth = -1; tooth <= 1; ++tooth)
+                draw::line(renderer, sx + tooth * skullSize / 3, sy + skullSize / 3,
+                           sx + tooth * skullSize / 3, sy + skullSize * 3 / 4, BG, 2);
+            draw::circle(renderer, sx, sy - skullSize / 4, skullSize + 3, WHITE);
+            draw::circle(renderer, sx, sy - skullSize / 4, skullSize + 4, WHITE);
+        }
+        else if (drops[i].type == DropType::Heart)
+        {
+            const int pulse = static_cast<int>((12.0f + std::sin(drops[i].phase * 2.0f) * 2.0f) * scale);
             draw::glowCircle(renderer, static_cast<int>(point.x) - pulse / 3, static_cast<int>(point.y) - pulse / 4, pulse * 2 / 3, PINK, qualityGlow(10));
             draw::glowCircle(renderer, static_cast<int>(point.x) + pulse / 3, static_cast<int>(point.y) - pulse / 4, pulse * 2 / 3, PINK, qualityGlow(10));
             draw::triangle(renderer, static_cast<int>(point.x) - pulse, static_cast<int>(point.y), static_cast<int>(point.x) + pulse, static_cast<int>(point.y), static_cast<int>(point.x), static_cast<int>(point.y) + pulse, PINK);
         }
         else
         {
-            draw::glowCircle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), 8, dropColor, qualityGlow(10));
-            draw::fillCircle(renderer, static_cast<int>(point.x) - 2, static_cast<int>(point.y) - 2, 3, withAlpha(WHITE, 120));
+            const int coinRadius = std::max(6, static_cast<int>(8.0f * scale));
+            draw::glowCircle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), coinRadius, dropColor, qualityGlow(drops[i].value > 1 ? 16 : 10));
+            draw::circle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), coinRadius + 3, dropColor);
+            draw::circle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), coinRadius + 2, dropColor);
+            draw::fillCircle(renderer, static_cast<int>(point.x) - coinRadius / 4, static_cast<int>(point.y) - coinRadius / 4,
+                             std::max(2, coinRadius / 3), withAlpha(WHITE, 150));
+            if (drops[i].value > 1)
+                draw::text(renderer, "2", static_cast<int>(point.x), static_cast<int>(point.y) - 5, 1, BG, true);
         }
     }
     for (unsigned i = 0; i < fireAreas.size(); ++i)
@@ -5450,23 +5261,6 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         else renderWorldEntityCircle(viewport, cameraPlayer, projectile.x, projectile.y, projectile.radius, projectile.color, projectile.kind == ProjectileDebris ? 14 : 8);
     }
     for (unsigned i = 0; i < enemies.size(); ++i) renderEnemy(viewport, cameraPlayer, enemies[i]);
-    for (int owner = 0; owner < playerCount; ++owner)
-    {
-        for (int slot = 0; slot < 3; ++slot)
-        {
-            const FriendlyBot& bot = friendlyBots[owner][slot];
-            if (!bot.active) continue;
-            const Vec2 point = toScreen(viewport, cameraPlayer, bot.x, bot.y);
-            const int bx = static_cast<int>(point.x);
-            const int by = static_cast<int>(point.y);
-            const int radius = static_cast<int>(bot.radius);
-            draw::glowCircle(renderer, bx, by, radius, PURPLE, qualityGlow(8));
-            draw::circle(renderer, bx, by, radius + 5, players[owner].color);
-            draw::text(renderer, "B" + number(slot + 1), bx, by - 5, 1, WHITE, true);
-            draw::fillRect(renderer, bx - 20, by - radius - 14, 40, 5, {0, 0, 0, 220});
-            draw::fillRect(renderer, bx - 20, by - radius - 14, static_cast<int>(40.0f * clampf(bot.hp / std::max(1.0f, bot.maxHp), 0.0f, 1.0f)), 5, GREEN);
-        }
-    }
     for (unsigned i = 0; i < souls.size(); ++i)
     {
         const Vec2 soul = toScreen(viewport, cameraPlayer, souls[i].x, souls[i].y);
