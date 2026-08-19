@@ -26,9 +26,12 @@ jobs:
         run: |
           set -euo pipefail
           command -v clang++
-          command -v ld.lld
           command -v curl
           command -v make
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends lld
+          fi
+          command -v ld.lld
           clang++ --version
           ld.lld --version
 
