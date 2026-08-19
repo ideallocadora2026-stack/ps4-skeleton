@@ -648,7 +648,7 @@ struct Game::Impl
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
           menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
           musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false),
-          intermissionActive(false), portalCharge(0.0f), statsBotIndex(0),
+          intermissionActive(false), combatCleanupPending(false), portalCharge(0.0f), statsBotIndex(0),
           backdropCacheQuality(-1), playingCacheQuality(-1), playingCacheLayout(-1),
           playingCacheDriftX(1000000), playingCacheDriftY(1000000)
     {
@@ -736,6 +736,7 @@ struct Game::Impl
     float soundVolume;
     bool coinSoundAlternate;
     bool intermissionActive;
+    bool combatCleanupPending;
     float portalCharge;
     int statsBotIndex;
     std::vector<uint32_t> backdropCache;
@@ -1663,6 +1664,7 @@ void Game::Impl::resetWorld()
     announcementTimer = 2.5f;
     bossDelay = 0.0f;
     intermissionActive = false;
+    combatCleanupPending = false;
     portalCharge = 0.0f;
     statsBotIndex = 0;
     cameraShake = 0.0f;
@@ -3067,10 +3069,10 @@ void Game::Impl::defeatBoss()
     profileDirty = true;
     saveProfile(false);
     boss.active = false;
-    enemyProjectiles.clear();
-    projectiles.clear();
-    enemies.clear();
-    fireAreas.clear();
+    // A morte pode acontecer dentro de handleProjectileCollisions(). Limpar os
+    // vetores aqui invalidaria a referencia do projetil que causou o golpe final.
+    // A limpeza e feita no fim do processamento de colisoes do mesmo quadro.
+    combatCleanupPending = true;
     bossDelay = 0.0f;
     intermissionActive = true;
     portalCharge = 0.0f;
@@ -4191,6 +4193,14 @@ void Game::Impl::updatePlaying(float dt)
 
     updateBoss(dt);
     handleProjectileCollisions(dt);
+    if (combatCleanupPending)
+    {
+        projectiles.clear();
+        enemyProjectiles.clear();
+        enemies.clear();
+        fireAreas.clear();
+        combatCleanupPending = false;
+    }
     handleEnemies(dt);
     handleDrops(dt);
     updateParticles(dt);
