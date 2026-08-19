@@ -99,17 +99,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Complete-v1.22.pkg
-          sha256sum output/Geometric-Wars-Complete-v1.22.pkg > output/Geometric-Wars-Complete-v1.22.pkg.sha256
-          ls -lh output/Geometric-Wars-Complete-v1.22.pkg
-          cat output/Geometric-Wars-Complete-v1.22.pkg.sha256
+          cp IV0000-GEOM00001_00-GEOMETRICWARS000.pkg output/Geometric-Wars-Complete-v1.23.pkg
+          sha256sum output/Geometric-Wars-Complete-v1.23.pkg > output/Geometric-Wars-Complete-v1.23.pkg.sha256
+          ls -lh output/Geometric-Wars-Complete-v1.23.pkg
+          cat output/Geometric-Wars-Complete-v1.23.pkg.sha256
 
       - name: Upload native PS4 package
         uses: actions/upload-artifact@v4
         with:
           name: Geometric-Wars-Native-PS4
           path: |
-            output/Geometric-Wars-Complete-v1.22.pkg
-            output/Geometric-Wars-Complete-v1.22.pkg.sha256
+            output/Geometric-Wars-Complete-v1.23.pkg
+            output/Geometric-Wars-Complete-v1.23.pkg.sha256
           if-no-files-found: error
           retention-days: 30

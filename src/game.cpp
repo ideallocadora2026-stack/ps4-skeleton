@@ -118,6 +118,7 @@ enum CharacterType
     CharacterShield,
     CharacterDrone,
     CharacterVampire,
+    CharacterManipulator,
     CharacterCount
 };
 
@@ -140,7 +141,8 @@ enum ProjectileKind
     ProjectileTriangle,
     ProjectileArrow,
     ProjectileDebris,
-    ProjectileGrenade
+    ProjectileGrenade,
+    ProjectileFireShard
 };
 
 struct CosmeticItem
@@ -178,7 +180,8 @@ const CharacterItem CHARACTERS[CharacterCount] = {
     {"DAMAGE AREA", "AREA DE VENENO", 1000, GREEN},
     {"SHIELD", "ESCUDO POR 10S", 1000, WHITE},
     {"THE DRONE", "DRONE DE COMBATE", 1000, GOLD},
-    {"VAMPIRE", "ROUBA 90% DE VIDA", 1000, PINK}
+    {"VAMPIRE", "ROUBA 90% DE VIDA", 1000, PINK},
+    {"THE MANIPULATOR", "CONVERTE 3 INIMIGOS", 1000, PURPLE}
 };
 
 struct PlayerSettings
@@ -341,6 +344,35 @@ struct Enemy
     float poisonTimer;
     float poisonVisualTimer;
     int poisonOwner;
+    float burnTimer;
+    float burnVisualTimer;
+    int burnOwner;
+};
+
+struct FriendlyBot
+{
+    bool active;
+    int owner;
+    int slot;
+    float x;
+    float y;
+    float hp;
+    float maxHp;
+    float speed;
+    float radius;
+    float angle;
+    float attackTimer;
+    Color color;
+};
+
+struct FireArea
+{
+    float x;
+    float y;
+    float radius;
+    float life;
+    int owner;
+    float phase;
 };
 
 struct Soul
@@ -616,6 +648,7 @@ struct Game::Impl
           resetConfirmTimer(0), profileDirty(false), disconnectedPlayers(0), controllerRefreshTick(0),
           menuTravelEffect(0), panelEntryEffect(0.28f), renderedScreen(Screen::Menu),
           musicVolume(1.0f), soundVolume(1.0f), coinSoundAlternate(false),
+          intermissionActive(false), portalCharge(0.0f), statsBotIndex(0),
           backdropCacheQuality(-1), playingCacheQuality(-1), playingCacheLayout(-1),
           playingCacheDriftX(1000000), playingCacheDriftY(1000000)
     {
@@ -625,6 +658,7 @@ struct Game::Impl
         std::memset(activeSkins, 0, sizeof(activeSkins));
         std::memset(activeHats, 0, sizeof(activeHats));
         std::memset(activeCharacters, 0, sizeof(activeCharacters));
+        std::memset(friendlyBots, 0, sizeof(friendlyBots));
         resetSettings();
     }
 
@@ -701,6 +735,9 @@ struct Game::Impl
     float musicVolume;
     float soundVolume;
     bool coinSoundAlternate;
+    bool intermissionActive;
+    float portalCharge;
+    int statsBotIndex;
     std::vector<uint32_t> backdropCache;
     int backdropCacheQuality;
     std::vector<uint32_t> playingBackgroundCache;
@@ -717,7 +754,9 @@ struct Game::Impl
     std::vector<FloatingText> floatingTexts;
     std::vector<Soul> souls;
     std::vector<LifeStream> lifeStreams;
+    std::vector<FireArea> fireAreas;
     std::vector<Wall> walls;
+    FriendlyBot friendlyBots[4][3];
     Boss boss;
 
     bool initialize();
@@ -765,6 +804,8 @@ struct Game::Impl
     void shoot(Player& player, int playerIndex);
     void throwGrenade(Player& player, int playerIndex);
     void explodeGrenade(float x, float y, int owner);
+    void createFireArea(float x, float y, int owner);
+    void updateFireAreas(float dt);
     bool anyTimeStop() const;
     bool skillReady(const Player& player) const;
     void configureCharacter(Player& player);
@@ -772,12 +813,18 @@ struct Game::Impl
     void updateCharacterAbilities(float dt);
     void updateSouls(float dt);
     void fireCompanionDrone(Player& player, int playerIndex);
+    void manipulateEnemies(Player& player, int playerIndex);
+    void updateFriendlyBots(float dt);
+    void repairFriendlyBot(Player& player, int playerIndex, int slot);
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
     void addFloatingText(float x, float y, const std::string& text, Color color);
     void addDrop(float x, float y, DropType type);
     void rewardDefeatedEnemy(const Enemy& enemy, int owner);
     void damagePlayer(Player& player, float damage);
     void buyUpgrade(Player& player, int type);
+    void buyMechanicUpgrade(Player& player, int type);
+    bool nearMechanic(const Player& player) const;
+    void updateIntermission(float dt);
     void resolveWalls(float& x, float& y, float radius);
     void handleProjectileCollisions(float dt);
     void handleEnemies(float dt);
@@ -805,6 +852,7 @@ struct Game::Impl
     void renderBoss(const Viewport& viewport, const Player& cameraPlayer);
     void renderPlayer(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index);
     void renderCharacterEffects(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index);
+    void renderIntermission(const Viewport& viewport, const Player& cameraPlayer);
     void renderAvatar(int x, int y, int radius, Color color, int skin, int hat, float animation, bool dead);
     void renderFloatingTexts(const Viewport& viewport, const Player& cameraPlayer);
     void renderHud(const Viewport& viewport, const Player& player, int index);
@@ -1563,8 +1611,14 @@ void Game::Impl::updateStats(float)
 {
     int playerIndex = 0;
     for (int i = 0; i < playerCount; ++i) if (players[i].pad == pausePad) { playerIndex = i; break; }
-    const Player& player = players[playerIndex];
+    Player& player = players[playerIndex];
     if (pressed(pausePad, PAD_CIRCLE) || pressed(pausePad, player.keys[ActionStats])) screen = Screen::Playing;
+    if (player.character == CharacterManipulator)
+    {
+        if (pressed(pausePad, PAD_UP)) statsBotIndex = (statsBotIndex + 2) % 3;
+        if (pressed(pausePad, PAD_DOWN)) statsBotIndex = (statsBotIndex + 1) % 3;
+        if (pressed(pausePad, PAD_CROSS)) repairFriendlyBot(player, playerIndex, statsBotIndex);
+    }
 }
 
 void Game::Impl::updateLobby(float dt)
@@ -1595,7 +1649,9 @@ void Game::Impl::resetWorld()
     floatingTexts.clear();
     souls.clear();
     lifeStreams.clear();
+    fireAreas.clear();
     walls.clear();
+    std::memset(friendlyBots, 0, sizeof(friendlyBots));
     std::memset(&boss, 0, sizeof(boss));
     mapMinX = 0.0f;
     mapMinY = 0.0f;
@@ -1606,6 +1662,9 @@ void Game::Impl::resetWorld()
     spawnTimer = 0.25f;
     announcementTimer = 2.5f;
     bossDelay = 0.0f;
+    intermissionActive = false;
+    portalCharge = 0.0f;
+    statsBotIndex = 0;
     cameraShake = 0.0f;
     totalKills = 0;
     enemyEdges = 0;
@@ -1718,6 +1777,11 @@ void Game::Impl::configureCharacter(Player& player)
         player.skillDuration = 0.0f;
         player.skillCooldownMax = 1.0f;
     }
+    else if (player.character == CharacterManipulator)
+    {
+        player.skillDuration = 0.0f;
+        player.skillCooldownMax = std::max(8.0f, 18.0f - (player.skillLevel - 1) * 0.8f);
+    }
     else
     {
         player.skillDuration = 3.0f + levelBonus;
@@ -1769,6 +1833,11 @@ void Game::Impl::activateSkill(Player& player, int playerIndex)
         lifeStreams.push_back(stream);
         player.souls = 0;
         addFloatingText(target.x, target.y - 30.0f, "VIDA CONVERTIDA", PINK);
+    }
+    else if (player.character == CharacterManipulator)
+    {
+        manipulateEnemies(player, playerIndex);
+        return;
     }
     else
     {
@@ -1822,6 +1891,142 @@ void Game::Impl::fireCompanionDrone(Player& player, int playerIndex)
         else damageBoss((boss.phase == 2 ? boss.maxHp : boss.maxRageHp) * 0.10f, -1);
     }
     player.droneBeamTimer = 0.16f;
+}
+
+void Game::Impl::manipulateEnemies(Player& player, int playerIndex)
+{
+    int converted = 0;
+    for (int slot = 0; slot < 3; ++slot)
+    {
+        FriendlyBot& bot = friendlyBots[playerIndex][slot];
+        if (bot.active) continue;
+        int nearestIndex = -1;
+        float nearest = 1e30f;
+        for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
+        {
+            if (enemies[i].kind == 1) continue;
+            const float d = distanceSquared(player.x, player.y, enemies[i].x, enemies[i].y);
+            if (d < nearest) { nearest = d; nearestIndex = i; }
+        }
+        if (nearestIndex < 0) break;
+        const Enemy source = enemies[nearestIndex];
+        bot.active = true;
+        bot.owner = playerIndex;
+        bot.slot = slot;
+        bot.x = source.x;
+        bot.y = source.y;
+        bot.hp = source.maxHp;
+        bot.maxHp = source.maxHp;
+        bot.speed = std::max(180.0f, source.speed * 0.9f);
+        bot.radius = std::max(13.0f, source.radius);
+        bot.angle = source.angle;
+        bot.attackTimer = 0.15f * slot;
+        bot.color = player.color;
+        enemies.erase(enemies.begin() + nearestIndex);
+        addParticles(bot.x, bot.y, PURPLE, 26, 300.0f, 0.9f);
+        addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " CONVERTIDO", PURPLE);
+        ++converted;
+    }
+    if (converted == 0)
+    {
+        addFloatingText(player.x, player.y - 34.0f, "SEM ESPACO OU ALVO", MUTED);
+        return;
+    }
+    player.skillCooldown = player.skillCooldownMax;
+    rumble(player.pad, 0.65f, 420);
+}
+
+void Game::Impl::repairFriendlyBot(Player& player, int playerIndex, int slot)
+{
+    if (slot < 0 || slot >= 3) return;
+    FriendlyBot& bot = friendlyBots[playerIndex][slot];
+    if (!bot.active) { showNotice("BOT " + number(slot + 1) + " INATIVO"); return; }
+    if (bot.hp >= bot.maxHp) { showNotice("BOT COM VIDA CHEIA"); return; }
+    if (player.coins < 5) { showNotice("G INSUFICIENTE"); return; }
+    player.coins -= 5;
+    const float restored = bot.maxHp * 0.5f;
+    bot.hp = std::min(bot.maxHp, bot.hp + restored);
+    addParticles(bot.x, bot.y, GREEN, 18, 220.0f, 0.7f);
+    showNotice("BOT " + number(slot + 1) + " REPARADO");
+}
+
+void Game::Impl::updateFriendlyBots(float dt)
+{
+    for (int owner = 0; owner < playerCount; ++owner)
+    {
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            FriendlyBot& bot = friendlyBots[owner][slot];
+            if (!bot.active) continue;
+            bot.attackTimer = std::max(0.0f, bot.attackTimer - dt);
+            bot.angle += dt * 2.8f;
+            int enemyIndex = -1;
+            float nearest = 1e30f;
+            float targetX = players[owner].x + std::cos(slot * PI * 2.0f / 3.0f) * 64.0f;
+            float targetY = players[owner].y + std::sin(slot * PI * 2.0f / 3.0f) * 64.0f;
+            bool bossTarget = false;
+            int bossSubTarget = -1;
+            for (int i = 0; i < static_cast<int>(enemies.size()); ++i)
+            {
+                const float d = distanceSquared(bot.x, bot.y, enemies[i].x, enemies[i].y);
+                if (d < nearest) { nearest = d; enemyIndex = i; targetX = enemies[i].x; targetY = enemies[i].y; }
+            }
+            if (enemyIndex < 0 && boss.active)
+            {
+                bossTarget = true;
+                if (boss.phase == 1)
+                {
+                    for (int weapon = 0; weapon < 3; ++weapon)
+                    {
+                        if (!boss.weapons[weapon].active) continue;
+                        float wx, wy;
+                        bossWeaponPosition(weapon, wx, wy);
+                        const float d = distanceSquared(bot.x, bot.y, wx, wy);
+                        if (d < nearest) { nearest = d; bossSubTarget = weapon; targetX = wx; targetY = wy; }
+                    }
+                }
+                else if (boss.phase == 2 && boss.shape == BossSquare)
+                {
+                    for (int part = 0; part < 4; ++part)
+                    {
+                        if (!boss.parts[part].active) continue;
+                        const float d = distanceSquared(bot.x, bot.y, boss.parts[part].x, boss.parts[part].y);
+                        if (d < nearest) { nearest = d; bossSubTarget = part; targetX = boss.parts[part].x; targetY = boss.parts[part].y; }
+                    }
+                }
+                else { targetX = boss.x; targetY = boss.y; nearest = distanceSquared(bot.x, bot.y, targetX, targetY); }
+            }
+            const float targetDistance = std::sqrt(std::max(0.0f, distanceSquared(bot.x, bot.y, targetX, targetY)));
+            if (targetDistance > 45.0f)
+            {
+                const float direction = angleTo(bot.x, bot.y, targetX, targetY);
+                bot.x += std::cos(direction) * bot.speed * dt;
+                bot.y += std::sin(direction) * bot.speed * dt;
+                resolveWalls(bot.x, bot.y, bot.radius);
+                bot.x = clampf(bot.x, mapMinX + bot.radius, mapMaxX - bot.radius);
+                bot.y = clampf(bot.y, mapMinY + bot.radius, mapMaxY - bot.radius);
+            }
+            else if (bot.attackTimer <= 0.0f && (enemyIndex >= 0 || bossTarget))
+            {
+                bot.attackTimer = 0.45f;
+                if (enemyIndex >= 0 && enemyIndex < static_cast<int>(enemies.size()))
+                {
+                    Enemy& target = enemies[enemyIndex];
+                    target.hp -= 6.0f;
+                    addParticles(target.x, target.y, PURPLE, 3, 120.0f, 0.35f);
+                    if (target.hp <= 0.0f)
+                    {
+                        const Enemy defeated = target;
+                        rewardDefeatedEnemy(defeated, owner);
+                        enemies.erase(enemies.begin() + enemyIndex);
+                    }
+                }
+                else if (boss.phase == 1 && bossSubTarget >= 0) damageBoss(6.0f, bossSubTarget);
+                else if (boss.phase == 2 && boss.shape == BossSquare && bossSubTarget >= 0) damageBossPart(bossSubTarget, 6.0f);
+                else damageBoss(6.0f, -1);
+            }
+        }
+    }
 }
 
 void Game::Impl::updateCharacterAbilities(float dt)
@@ -2004,11 +2209,16 @@ void Game::Impl::spawnEnemy()
     enemy.poisonTimer = 0.0f;
     enemy.poisonVisualTimer = 0.0f;
     enemy.poisonOwner = -1;
+    enemy.burnTimer = 0.0f;
+    enemy.burnVisualTimer = 0.0f;
+    enemy.burnOwner = -1;
     enemies.push_back(enemy);
 }
 
 void Game::Impl::nextWave()
 {
+    intermissionActive = false;
+    portalCharge = 0.0f;
     ++wave;
     waveElapsed = 0.0f;
     spawnTimer = 0.3f;
@@ -2125,6 +2335,9 @@ void Game::Impl::spawnBossDrone()
     drone.poisonTimer = 0.0f;
     drone.poisonVisualTimer = 0.0f;
     drone.poisonOwner = -1;
+    drone.burnTimer = 0.0f;
+    drone.burnVisualTimer = 0.0f;
+    drone.burnOwner = -1;
     enemies.push_back(drone);
     ++boss.droneCount;
 }
@@ -2840,15 +3053,27 @@ void Game::Impl::defeatBoss()
     for (int i = 0; i < playerCount; ++i)
     {
         players[i].score += 5000;
-        addFloatingText(players[i].x, players[i].y - 50.0f, "BOSS DESTRUIDO! +15 PRATA", GOLD);
+        players[i].coins += 15;
+        if (players[i].hp <= 0.0f)
+        {
+            players[i].hp = players[i].maxHp * 0.5f;
+            players[i].pendingRevive = false;
+            players[i].invincible = 2.0f;
+        }
+        addFloatingText(players[i].x, players[i].y - 50.0f, "BOSS! +50 S +15 G", GOLD);
         rumble(players[i].pad, 1.0f, 1200);
     }
-    profileSilver += 15;
+    profileSilver += 50;
     profileDirty = true;
     saveProfile(false);
     boss.active = false;
     enemyProjectiles.clear();
-    bossDelay = 3.5f;
+    projectiles.clear();
+    enemies.clear();
+    fireAreas.clear();
+    bossDelay = 0.0f;
+    intermissionActive = true;
+    portalCharge = 0.0f;
     const int shapeEdges[BossCount] = {8, 4, 3, 0, 8, 4};
     enemyEdges = shapeEdges[shape];
     enemyColor = theme;
@@ -2861,8 +3086,8 @@ void Game::Impl::defeatBoss()
     const float cy = (mapMinY + mapMaxY) * 0.5f;
     walls.push_back({mapMinX + 100.0f, cy - 40.0f, 80.0f, 80.0f, 40.0f});
     walls.push_back({mapMaxX - 180.0f, cy - 40.0f, 80.0f, 80.0f, 40.0f});
-    walls.push_back({cx - 40.0f, mapMinY + 100.0f, 80.0f, 80.0f, 40.0f});
-    walls.push_back({cx - 40.0f, mapMaxY - 180.0f, 80.0f, 80.0f, 40.0f});
+    walls.push_back({cx - 340.0f, mapMinY + 180.0f, 80.0f, 80.0f, 40.0f});
+    walls.push_back({cx + 260.0f, mapMaxY - 260.0f, 80.0f, 80.0f, 40.0f});
 }
 
 void Game::Impl::shoot(Player& player, int playerIndex)
@@ -3042,9 +3267,63 @@ void Game::Impl::explodeGrenade(float x, float y, int owner)
 
     addParticles(x, y, GRENADE_GREEN, 70, 610.0f, 1.05f);
     addParticles(x, y, WHITE, 28, 430.0f, 0.65f);
+    const float baseAngle = random01() * PI * 0.5f;
+    for (int shard = 0; shard < 4; ++shard)
+    {
+        const float angle = baseAngle + shard * PI * 0.5f;
+        Projectile fire;
+        fire.x = x;
+        fire.y = y;
+        fire.vx = std::cos(angle) * 560.0f;
+        fire.vy = std::sin(angle) * 560.0f;
+        fire.radius = 7.0f;
+        fire.damage = 0.0f;
+        fire.owner = owner;
+        fire.color = ORANGE;
+        fire.trailCount = 0;
+        fire.kind = ProjectileFireShard;
+        fire.bounces = 0;
+        fire.angle = angle;
+        fire.rotationSpeed = 8.0f;
+        projectiles.push_back(fire);
+    }
     addFloatingText(x, y - 45.0f, destroyed > 0 ? "BOOM! x" + number(destroyed) : "BOOM!", GRENADE_GREEN);
     cameraShake = std::max(cameraShake, 32.0f);
     if (owner >= 0 && owner < playerCount) rumble(players[owner].pad, 0.85f, 390);
+}
+
+void Game::Impl::createFireArea(float x, float y, int owner)
+{
+    FireArea area;
+    area.x = clampf(x, mapMinX + 22.0f, mapMaxX - 22.0f);
+    area.y = clampf(y, mapMinY + 22.0f, mapMaxY - 22.0f);
+    area.radius = 24.0f;
+    area.life = 4.0f;
+    area.owner = owner;
+    area.phase = random01() * PI * 2.0f;
+    fireAreas.push_back(area);
+    addParticles(area.x, area.y, ORANGE, 18, 170.0f, 0.65f);
+}
+
+void Game::Impl::updateFireAreas(float dt)
+{
+    for (int i = static_cast<int>(fireAreas.size()) - 1; i >= 0; --i)
+    {
+        FireArea& area = fireAreas[i];
+        area.life -= dt;
+        area.phase += dt * 5.0f;
+        const float radiusSquared = area.radius * area.radius;
+        for (unsigned e = 0; e < enemies.size(); ++e)
+        {
+            const float combined = area.radius + enemies[e].radius;
+            if (distanceSquared(area.x, area.y, enemies[e].x, enemies[e].y) <= std::max(radiusSquared, combined * combined))
+            {
+                enemies[e].burnTimer = 3.0f;
+                enemies[e].burnOwner = area.owner;
+            }
+        }
+        if (area.life <= 0.0f) fireAreas.erase(fireAreas.begin() + i);
+    }
 }
 
 void Game::Impl::buyUpgrade(Player& player, int type)
@@ -3082,6 +3361,73 @@ void Game::Impl::buyUpgrade(Player& player, int type)
         ++player.grenades;
         addFloatingText(player.x, player.y - 28.0f, "+1 GRANADA", GRENADE_GREEN);
         rumble(player.pad, 0.35f, 120);
+    }
+}
+
+bool Game::Impl::nearMechanic(const Player& player) const
+{
+    if (!intermissionActive) return false;
+    const float mechanicX = (mapMinX + mapMaxX) * 0.5f;
+    const float mechanicY = (mapMinY + mapMaxY) * 0.5f;
+    return distanceSquared(player.x, player.y, mechanicX, mechanicY) <= 175.0f * 175.0f;
+}
+
+void Game::Impl::buyMechanicUpgrade(Player& player, int type)
+{
+    const int original = type == 1 ? player.fireCost : (type == 2 ? player.damageCost : (type == 3 ? player.skillCost : 8));
+    const int price = type == 4 ? 8 : std::max(1, static_cast<int>(std::ceil(original * 0.70f)));
+    if (type == 1 && player.fireLevel >= 10) { showNotice("TIRO NO MAXIMO"); return; }
+    if (type == 2 && player.damageLevel >= 10) { showNotice("DANO NO MAXIMO"); return; }
+    if (player.coins < price) { showNotice("G INSUFICIENTE"); return; }
+    player.coins -= price;
+    if (type == 1)
+    {
+        ++player.fireLevel;
+        player.fireRate = std::max(0.065f, 0.16f - (player.fireLevel - 1) * 0.012f);
+        player.fireCost = 15 + (player.fireLevel - 1) * 10;
+        addFloatingText(player.x, player.y - 28.0f, "TIRO LV." + number(player.fireLevel) + " -30%", GOLD);
+    }
+    else if (type == 2)
+    {
+        ++player.damageLevel;
+        player.damageMultiplier = 1.0f + (player.damageLevel - 1) * 0.20f;
+        player.damageCost = 30 + (player.damageLevel - 1) * 15;
+        addFloatingText(player.x, player.y - 28.0f, "DANO LV." + number(player.damageLevel) + " -30%", GOLD);
+    }
+    else if (type == 3)
+    {
+        ++player.skillLevel;
+        configureCharacter(player);
+        player.skillCost = static_cast<int>(player.skillCost * 1.8f);
+        addFloatingText(player.x, player.y - 28.0f, "HABILIDADE LV." + number(player.skillLevel) + " -30%", GOLD);
+    }
+    else
+    {
+        ++player.grenades;
+        addFloatingText(player.x, player.y - 28.0f, "+1 GRANADA 8G", GRENADE_GREEN);
+    }
+    rumble(player.pad, 0.4f, 130);
+}
+
+void Game::Impl::updateIntermission(float dt)
+{
+    if (!intermissionActive) return;
+    const float portalX = (mapMinX + mapMaxX) * 0.5f;
+    const float portalY = mapMinY + 105.0f;
+    bool everyoneReady = playerCount > 0;
+    for (int i = 0; i < playerCount; ++i)
+    {
+        const Player& player = players[i];
+        const bool inside = player.hp > 0.0f && std::abs(player.x - portalX) <= 145.0f && std::abs(player.y - portalY) <= 62.0f;
+        if (!inside) { everyoneReady = false; break; }
+    }
+    portalCharge = everyoneReady ? portalCharge + dt : 0.0f;
+    if (portalCharge >= 1.25f)
+    {
+        intermissionActive = false;
+        portalCharge = 0.0f;
+        addParticles(portalX, portalY, CYAN, 70, 430.0f, 1.0f);
+        nextWave();
     }
 }
 
@@ -3234,6 +3580,62 @@ void Game::Impl::handleProjectileCollisions(float dt)
             continue;
         }
 
+        if (projectile.kind == ProjectileFireShard)
+        {
+            bool impact = projectile.x <= mapMinX + projectile.radius || projectile.x >= mapMaxX - projectile.radius ||
+                          projectile.y <= mapMinY + projectile.radius || projectile.y >= mapMaxY - projectile.radius;
+            if (!impact)
+            {
+                for (unsigned e = 0; e < enemies.size(); ++e)
+                {
+                    const float radius = projectile.radius + enemies[e].radius;
+                    if (distanceSquared(projectile.x, projectile.y, enemies[e].x, enemies[e].y) <= radius * radius) { impact = true; break; }
+                }
+            }
+            if (!impact && boss.active)
+            {
+                if (boss.phase == 1)
+                {
+                    for (int weapon = 0; weapon < 3; ++weapon)
+                    {
+                        if (!boss.weapons[weapon].active) continue;
+                        float wx, wy;
+                        bossWeaponPosition(weapon, wx, wy);
+                        if (distanceSquared(projectile.x, projectile.y, wx, wy) <= 30.0f * 30.0f) { impact = true; break; }
+                    }
+                }
+                else if (boss.phase == 2 && boss.shape == BossSquare)
+                {
+                    for (int part = 0; part < 4; ++part)
+                    {
+                        if (!boss.parts[part].active) continue;
+                        if (distanceSquared(projectile.x, projectile.y, boss.parts[part].x, boss.parts[part].y) <= 42.0f * 42.0f) { impact = true; break; }
+                    }
+                }
+                else
+                {
+                    const float radius = projectile.radius + boss.radius;
+                    impact = distanceSquared(projectile.x, projectile.y, boss.x, boss.y) <= radius * radius;
+                }
+            }
+            if (!impact)
+            {
+                for (unsigned wallIndex = 0; wallIndex < walls.size(); ++wallIndex)
+                {
+                    const Wall& wall = walls[wallIndex];
+                    const float closestX = clampf(projectile.x, wall.x, wall.x + wall.w);
+                    const float closestY = clampf(projectile.y, wall.y, wall.y + wall.h);
+                    if (distanceSquared(projectile.x, projectile.y, closestX, closestY) <= projectile.radius * projectile.radius) { impact = true; break; }
+                }
+            }
+            if (impact)
+            {
+                createFireArea(projectile.x, projectile.y, projectile.owner);
+                projectiles.erase(projectiles.begin() + i);
+            }
+            continue;
+        }
+
         if (boss.active)
         {
             if (boss.phase == 1)
@@ -3246,7 +3648,7 @@ void Game::Impl::handleProjectileCollisions(float dt)
                     const float radius = projectile.radius + 22.0f;
                     if (distanceSquared(projectile.x, projectile.y, x, y) <= radius * radius)
                     {
-                        damageBoss(projectile.damage * 0.5f, weapon);
+                        damageBoss(projectile.damage, weapon);
                         if (projectile.owner >= 0) players[projectile.owner].score += 5;
                         hit = true;
                         break;
@@ -3261,7 +3663,7 @@ void Game::Impl::handleProjectileCollisions(float dt)
                     const float radius = projectile.radius + 34.0f;
                     if (distanceSquared(projectile.x, projectile.y, boss.parts[part].x, boss.parts[part].y) <= radius * radius)
                     {
-                        damageBossPart(part, projectile.damage * 0.5f);
+                        damageBossPart(part, projectile.damage);
                         if (projectile.owner >= 0) players[projectile.owner].score += 5;
                         hit = true;
                         break;
@@ -3273,7 +3675,7 @@ void Game::Impl::handleProjectileCollisions(float dt)
                 const float radius = projectile.radius + boss.radius;
                 if (distanceSquared(projectile.x, projectile.y, boss.x, boss.y) <= radius * radius)
                 {
-                    damageBoss(projectile.damage * 0.5f, -1);
+                    damageBoss(projectile.damage, -1);
                     if (projectile.owner >= 0) players[projectile.owner].score += 5;
                     hit = true;
                 }
@@ -3350,6 +3752,25 @@ void Game::Impl::handleEnemies(float dt)
                     continue;
                 }
             }
+            if (enemy.burnTimer > 0.0f)
+            {
+                enemy.burnTimer = std::max(0.0f, enemy.burnTimer - dt);
+                enemy.burnVisualTimer -= dt;
+                enemy.hp -= 10.0f * dt;
+                if (enemy.burnVisualTimer <= 0.0f)
+                {
+                    enemy.burnVisualTimer = 0.16f;
+                    addParticles(enemy.x, enemy.y, ORANGE, 2, 95.0f, 0.45f);
+                }
+                if (enemy.hp <= 0.0f)
+                {
+                    const Enemy defeated = enemy;
+                    rewardDefeatedEnemy(defeated, enemy.burnOwner);
+                    addParticles(enemy.x, enemy.y, ORANGE, 22, 340.0f, 0.9f);
+                    enemies.erase(enemies.begin() + i);
+                    continue;
+                }
+            }
             Player* target = nullptr;
             float nearest = 1e30f;
             if (enemy.kind == 1 && enemy.targetPlayer >= 0 && enemy.targetPlayer < playerCount && players[enemy.targetPlayer].hp > 0.0f)
@@ -3367,9 +3788,27 @@ void Game::Impl::handleEnemies(float dt)
                     }
                 }
             }
+            FriendlyBot* botTarget = nullptr;
+            if (enemy.kind == 0)
+            {
+                for (int owner = 0; owner < playerCount; ++owner)
+                    for (int slot = 0; slot < 3; ++slot)
+                    {
+                        FriendlyBot& candidate = friendlyBots[owner][slot];
+                        if (!candidate.active) continue;
+                        const float d = distanceSquared(enemy.x, enemy.y, candidate.x, candidate.y);
+                        if (d < nearest) { nearest = d; target = nullptr; botTarget = &candidate; }
+                    }
+            }
             if (target)
             {
                 const float angle = angleTo(enemy.x, enemy.y, target->x, target->y);
+                enemy.x += std::cos(angle) * enemy.speed * dt;
+                enemy.y += std::sin(angle) * enemy.speed * dt;
+            }
+            else if (botTarget)
+            {
+                const float angle = angleTo(enemy.x, enemy.y, botTarget->x, botTarget->y);
                 enemy.x += std::cos(angle) * enemy.speed * dt;
                 enemy.y += std::sin(angle) * enemy.speed * dt;
             }
@@ -3391,6 +3830,31 @@ void Game::Impl::handleEnemies(float dt)
                     enemies.erase(enemies.begin() + i);
                     consumed = true;
                     break;
+                }
+            }
+            if (!consumed)
+            {
+                for (int owner = 0; owner < playerCount && !consumed; ++owner)
+                {
+                    for (int slot = 0; slot < 3; ++slot)
+                    {
+                        FriendlyBot& bot = friendlyBots[owner][slot];
+                        if (!bot.active) continue;
+                        const float radius = enemy.radius + bot.radius;
+                        if (distanceSquared(enemy.x, enemy.y, bot.x, bot.y) > radius * radius) continue;
+                        bot.hp -= enemy.kind == 1 ? 12.0f : 15.0f;
+                        addParticles(enemy.x, enemy.y, PURPLE, 12, 260.0f, 0.7f);
+                        enemies.erase(enemies.begin() + i);
+                        consumed = true;
+                        if (bot.hp <= 0.0f)
+                        {
+                            bot.hp = 0.0f;
+                            bot.active = false;
+                            addParticles(bot.x, bot.y, RED, 28, 360.0f, 1.0f);
+                            addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " DESTRUIDO", RED);
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -3439,6 +3903,29 @@ void Game::Impl::handleEnemies(float dt)
                     damagePlayer(players[p], projectile.damage);
                     hit = true;
                     break;
+                }
+            }
+            if (!hit)
+            {
+                for (int owner = 0; owner < playerCount && !hit; ++owner)
+                {
+                    for (int slot = 0; slot < 3; ++slot)
+                    {
+                        FriendlyBot& bot = friendlyBots[owner][slot];
+                        if (!bot.active) continue;
+                        const float radius = projectile.radius + bot.radius;
+                        if (distanceSquared(projectile.x, projectile.y, bot.x, bot.y) > radius * radius) continue;
+                        bot.hp -= projectile.damage;
+                        hit = true;
+                        if (bot.hp <= 0.0f)
+                        {
+                            bot.hp = 0.0f;
+                            bot.active = false;
+                            addParticles(bot.x, bot.y, RED, 28, 360.0f, 1.0f);
+                            addFloatingText(bot.x, bot.y - 26.0f, "BOT " + number(slot + 1) + " DESTRUIDO", RED);
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -3576,6 +4063,7 @@ void Game::Impl::updatePlaying(float dt)
         if (pressed(players[i].pad, players[i].keys[ActionStats]))
         {
             pausePad = players[i].pad;
+            statsBotIndex = 0;
             screen = Screen::Stats;
             return;
         }
@@ -3659,17 +4147,24 @@ void Game::Impl::updatePlaying(float dt)
             (boss.active && boss.shape == BossDpad && boss.phase == 3 && boss.memoryState < 4);
         if (!shotsBlocked && player.fireTimer <= 0.0f && (!enemies.empty() || boss.active)) shoot(player, i);
         if (!shotsBlocked && pressed(player.pad, player.keys[ActionGrenade])) throwGrenade(player, i);
-        if (pressed(player.pad, player.keys[ActionUpgradeFire])) buyUpgrade(player, 1);
-        if (pressed(player.pad, player.keys[ActionUpgradeDamage])) buyUpgrade(player, 2);
-        if (pressed(player.pad, player.keys[ActionUpgradeSkill])) buyUpgrade(player, 3);
-        if (pressed(player.pad, player.keys[ActionBuyGrenade])) buyUpgrade(player, 4);
+        const bool mechanicDiscount = nearMechanic(player);
+        if (pressed(player.pad, player.keys[ActionUpgradeFire])) { if (mechanicDiscount) buyMechanicUpgrade(player, 1); else buyUpgrade(player, 1); }
+        if (pressed(player.pad, player.keys[ActionUpgradeDamage])) { if (mechanicDiscount) buyMechanicUpgrade(player, 2); else buyUpgrade(player, 2); }
+        if (pressed(player.pad, player.keys[ActionUpgradeSkill])) { if (mechanicDiscount) buyMechanicUpgrade(player, 3); else buyUpgrade(player, 3); }
+        if (pressed(player.pad, player.keys[ActionBuyGrenade])) { if (mechanicDiscount) buyMechanicUpgrade(player, 4); else buyUpgrade(player, 4); }
     }
 
     updateCharacterAbilities(dt);
     updateSouls(dt);
+    updateFriendlyBots(dt);
+    updateFireAreas(dt);
 
     if (announcementTimer > 0.0f) announcementTimer -= dt;
-    if (bossDelay > 0.0f)
+    if (intermissionActive)
+    {
+        updateIntermission(dt);
+    }
+    else if (bossDelay > 0.0f)
     {
         bossDelay -= dt;
         if (bossDelay <= 0.0f) nextWave();
@@ -3968,27 +4463,47 @@ void Game::Impl::renderStats()
     int playerIndex = 0;
     for (int i = 0; i < playerCount; ++i) if (players[i].pad == pausePad) { playerIndex = i; break; }
     const Player& player = players[playerIndex];
-    draw::panel(renderer, 555, 170, 810, 735, player.color, {2, 8, 24, 244});
+    draw::panel(renderer, 410, 125, 1100, 850, player.color, {2, 8, 24, 244});
     draw::text(renderer, "ESTATISTICAS - JOGADOR " + number(playerIndex + 1), SCREEN_W / 2, 215, 4, player.color, true);
     draw::text(renderer, CHARACTERS[player.character].name, SCREEN_W / 2, 270, 2, CHARACTERS[player.character].color, true);
-    const int x = 650;
-    const int valueX = 1240;
+    const int x = 470;
+    const int valueX = player.character == CharacterManipulator ? 990 : 1390;
     const int y = 350;
     const int spacing = 72;
     const std::string values[5] = {
         oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
         oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
-        (player.character == CharacterVampire ? number(player.souls) + "/50 ALMAS" : oneDecimal(player.skillDuration) + "S") + "   LV." + number(player.skillLevel),
+        (player.character == CharacterVampire ? number(player.souls) + "/50 ALMAS" :
+         (player.character == CharacterManipulator ? "3 BOTS" : oneDecimal(player.skillDuration) + "S")) + "   LV." + number(player.skillLevel),
         number(player.grenades), number(player.kills)
     };
     const char* labels[5] = {"VELOCIDADE DO TIRO", "DANO DO JOGADOR", "HABILIDADE", "GRANADAS", "KILLS"};
     for (int i = 0; i < 5; ++i)
     {
-        draw::fillRect(renderer, x, y + i * spacing - 10, 620, 54, i % 2 == 0 ? Color{0, 35, 65, 95} : Color{0, 10, 25, 120});
+        const int rowWidth = player.character == CharacterManipulator ? 540 : 860;
+        draw::fillRect(renderer, x, y + i * spacing - 10, rowWidth, 54, i % 2 == 0 ? Color{0, 35, 65, 95} : Color{0, 10, 25, 120});
         draw::text(renderer, labels[i], x + 22, y + i * spacing + 5, 2, MUTED);
         draw::text(renderer, values[i], valueX - draw::textWidth(values[i], 2), y + i * spacing + 5, 2, i == 2 ? CHARACTERS[player.character].color : WHITE);
     }
-    draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 842, 2, MUTED, true);
+    if (player.character == CharacterManipulator)
+    {
+        draw::text(renderer, "NPCS ALIADOS", 1245, 330, 2, PURPLE, true);
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            const FriendlyBot& bot = friendlyBots[playerIndex][slot];
+            const int botY = 375 + slot * 100;
+            const bool selected = statsBotIndex == slot;
+            draw::fillRect(renderer, 1050, botY, 390, 82, selected ? Color{70, 15, 100, 190} : Color{0, 8, 20, 200});
+            draw::outlineRect(renderer, 1050, botY, 390, 82, selected ? GREEN : withAlpha(PURPLE, 120), selected ? 3 : 1);
+            draw::text(renderer, "BOT " + number(slot + 1), 1070, botY + 14, 2, bot.active ? WHITE : MUTED);
+            const std::string botLife = bot.active ? number(static_cast<int>(std::ceil(bot.hp))) + "/" + number(static_cast<int>(std::ceil(bot.maxHp))) : "INATIVO";
+            draw::text(renderer, botLife, 1070, botY + 49, 1, bot.active ? GREEN : RED);
+            draw::fillRect(renderer, 1318, botY + 19, 102, 44, GREEN);
+            draw::text(renderer, "X 5G", 1369, botY + 32, 1, BG, true);
+        }
+        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 700, 1, MUTED, true);
+    }
+    draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 910, 2, MUTED, true);
 }
 
 void Game::Impl::renderPause()
@@ -4092,6 +4607,11 @@ void Game::Impl::renderEnemy(const Viewport& viewport, const Player& cameraPlaye
     {
         draw::circle(renderer, x, y, radius + 7, GREEN);
         draw::fillCircle(renderer, x + radius / 2, y - radius / 2, 3, withAlpha(GREEN, 190));
+    }
+    if (enemy.burnTimer > 0.0f)
+    {
+        draw::circle(renderer, x, y, radius + 10, ORANGE);
+        draw::triangle(renderer, x - 6, y - radius - 4, x, y - radius - 17, x + 6, y - radius - 4, ORANGE);
     }
 
     if (enemy.hp < enemy.maxHp)
@@ -4485,6 +5005,53 @@ void Game::Impl::renderCharacterEffects(const Viewport& viewport, const Player& 
     }
 }
 
+void Game::Impl::renderIntermission(const Viewport& viewport, const Player& cameraPlayer)
+{
+    if (!intermissionActive) return;
+    const float centerX = (mapMinX + mapMaxX) * 0.5f;
+    const float centerY = (mapMinY + mapMaxY) * 0.5f;
+    const float portalY = mapMinY + 105.0f;
+    const Vec2 portal = toScreen(viewport, cameraPlayer, centerX, portalY);
+    const int px = static_cast<int>(portal.x);
+    const int py = static_cast<int>(portal.y);
+    const int pulse = 8 + static_cast<int>((std::sin(lastTick / 90.0f) + 1.0f) * 5.0f);
+    draw::fillRect(renderer, px - 145, py - 62, 290, 124, {0, 35, 75, 120});
+    draw::outlineRect(renderer, px - 145, py - 62, 290, 124, CYAN, 4);
+    draw::outlineRect(renderer, px - 132 - pulse / 2, py - 50 - pulse / 2, 264 + pulse, 100 + pulse, withAlpha(PURPLE, 135), 3);
+    for (int light = 0; light < 8; ++light)
+    {
+        const int lx = px - 126 + light * 36;
+        const Color colorValue = light % 2 == 0 ? CYAN : PURPLE;
+        draw::glowCircle(renderer, lx, py - 49, 5, colorValue, qualityGlow(8));
+        draw::glowCircle(renderer, lx, py + 49, 5, colorValue, qualityGlow(8));
+    }
+    draw::text(renderer, "PORTAL DA PROXIMA ONDA", px, py - 9, 1, WHITE, true);
+    draw::fillRect(renderer, px - 100, py + 17, 200, 8, {15, 25, 45, 220});
+    draw::fillRect(renderer, px - 100, py + 17, static_cast<int>(200.0f * clampf(portalCharge / 1.25f, 0.0f, 1.0f)), 8, GREEN);
+
+    const Vec2 mechanic = toScreen(viewport, cameraPlayer, centerX, centerY);
+    const int mx = static_cast<int>(mechanic.x);
+    const int my = static_cast<int>(mechanic.y);
+    draw::fillRect(renderer, mx - 33, my - 18, 66, 76, {30, 38, 55, 255});
+    draw::outlineRect(renderer, mx - 33, my - 18, 66, 76, GOLD, 3);
+    draw::fillCircle(renderer, mx, my - 43, 25, {205, 154, 105, 255});
+    draw::fillRect(renderer, mx - 31, my - 66, 62, 15, {35, 44, 62, 255});
+    draw::fillRect(renderer, mx - 21, my - 79, 42, 17, {35, 44, 62, 255});
+    draw::circle(renderer, mx - 8, my - 45, 3, BG);
+    draw::circle(renderer, mx + 8, my - 45, 3, BG);
+    const int crateOffsets[6][2] = {{-135, -5}, {92, 16}, {-105, 70}, {118, 82}, {-175, 72}, {165, -2}};
+    for (int crate = 0; crate < 6; ++crate)
+    {
+        const int cx = mx + crateOffsets[crate][0];
+        const int cy = my + crateOffsets[crate][1];
+        draw::fillRect(renderer, cx - 24, cy - 20, 48, 40, crate % 2 == 0 ? Color{92, 56, 24, 255} : Color{45, 62, 82, 255});
+        draw::outlineRect(renderer, cx - 24, cy - 20, 48, 40, GOLD, 2);
+        draw::line(renderer, cx - 20, cy - 16, cx + 20, cy + 16, withAlpha(GOLD, 120), 2);
+    }
+    draw::text(renderer, "MAQUINISTA - 30% OFF", mx, my - 116, 2, GOLD, true);
+    draw::text(renderer, "APROXIME-SE E USE OS BOTOES DE UPGRADE", mx, my + 112, 1, MUTED, true);
+}
+
 void Game::Impl::renderPlayer(const Viewport& viewport, const Player& cameraPlayer, const Player& player, int index)
 {
     const Vec2 point = toScreen(viewport, cameraPlayer, player.x, player.y);
@@ -4549,28 +5116,30 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
 
     if (viewport.w >= 620)
     {
+        const bool mechanicDiscount = nearMechanic(player);
+        const auto displayedPrice = [&](int value) -> int { return mechanicDiscount ? std::max(1, static_cast<int>(std::ceil(value * 0.70f))) : value; };
         const int shopWidth = 400;
         const int shopHeight = 164;
         const int shopX = viewport.x + viewport.w - padding - shopWidth;
         const int shopY = bottom - shopHeight;
         draw::fillRect(renderer, shopX, shopY, shopWidth, shopHeight, {2, 6, 20, 230});
         draw::outlineRect(renderer, shopX, shopY, shopWidth, shopHeight, withAlpha(CYAN, 45), 1);
-        draw::text(renderer, "UPGRADES", shopX + 15, shopY + 12, 1, MUTED);
+        draw::text(renderer, mechanicDiscount ? "MAQUINISTA -30%" : "UPGRADES", shopX + 15, shopY + 12, 1, mechanicDiscount ? GOLD : MUTED);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeFire]) + "]", shopX + 15, shopY + 40, 1, MUTED);
         draw::text(renderer, "TIRO LV." + number(player.fireLevel), shopX + 170, shopY + 39, 1, WHITE);
-        const std::string firePrice = player.fireLevel >= 10 ? "MAX" : number(player.fireCost) + " G";
+        const std::string firePrice = player.fireLevel >= 10 ? "MAX" : number(displayedPrice(player.fireCost)) + " G";
         draw::text(renderer, firePrice, shopX + 385 - draw::textWidth(firePrice, 1), shopY + 39, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeDamage]) + "]", shopX + 15, shopY + 68, 1, MUTED);
         draw::text(renderer, "DANO LV." + number(player.damageLevel), shopX + 170, shopY + 67, 1, WHITE);
-        const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(player.damageCost) + " G";
+        const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(displayedPrice(player.damageCost)) + " G";
         draw::text(renderer, damagePrice, shopX + 385 - draw::textWidth(damagePrice, 1), shopY + 67, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
         draw::text(renderer, "HABILIDADE LV." + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
-        const std::string skillPrice = number(player.skillCost) + " G";
+        const std::string skillPrice = number(displayedPrice(player.skillCost)) + " G";
         draw::text(renderer, skillPrice, shopX + 385 - draw::textWidth(skillPrice, 1), shopY + 95, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionBuyGrenade]) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
         draw::text(renderer, "GRANADA", shopX + 170, shopY + 123, 1, GRENADE_GREEN);
-        const std::string grenadePrice = number(GRENADE_COST) + " G";
+        const std::string grenadePrice = number(mechanicDiscount ? 8 : GRENADE_COST) + " G";
         draw::text(renderer, grenadePrice, shopX + 385 - draw::textWidth(grenadePrice, 1), shopY + 123, 1, GOLD);
     }
 }
@@ -4677,6 +5246,7 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         draw::fillRect(renderer, static_cast<int>(point.x), static_cast<int>(point.y), static_cast<int>(walls[i].w), static_cast<int>(walls[i].h), {20, 60, 120, 150});
         draw::outlineRect(renderer, static_cast<int>(point.x), static_cast<int>(point.y), static_cast<int>(walls[i].w), static_cast<int>(walls[i].h), CYAN_DIM, 2);
     }
+    renderIntermission(viewport, cameraPlayer);
 
     for (unsigned i = 0; i < drops.size(); ++i)
     {
@@ -4695,6 +5265,15 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
             draw::glowCircle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), 8, dropColor, qualityGlow(10));
             draw::fillCircle(renderer, static_cast<int>(point.x) - 2, static_cast<int>(point.y) - 2, 3, withAlpha(WHITE, 120));
         }
+    }
+    for (unsigned i = 0; i < fireAreas.size(); ++i)
+    {
+        const FireArea& area = fireAreas[i];
+        const Vec2 point = toScreen(viewport, cameraPlayer, area.x, area.y);
+        const int radius = static_cast<int>(area.radius + std::sin(area.phase) * 2.0f);
+        draw::glowCircle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), radius, withAlpha(ORANGE, 105), qualityGlow(10));
+        draw::circle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), radius, ORANGE);
+        draw::fillCircle(renderer, static_cast<int>(point.x), static_cast<int>(point.y), std::max(3, radius / 3), {255, 75, 0, 105});
     }
     const int particleStep = qualityParticleStep();
     for (unsigned i = 0; i < particles.size(); i += particleStep)
@@ -4732,6 +5311,16 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
                            gy + static_cast<int>(std::sin(angle) * (radius + 8)),
                            GRENADE_GREEN, 3);
             }
+        }
+        else if (projectiles[i].kind == ProjectileFireShard)
+        {
+            const Vec2 fire = toScreen(viewport, cameraPlayer, projectiles[i].x, projectiles[i].y);
+            const int fx = static_cast<int>(fire.x);
+            const int fy = static_cast<int>(fire.y);
+            draw::glowCircle(renderer, fx, fy, 8, ORANGE, qualityGlow(12));
+            draw::triangle(renderer, fx + static_cast<int>(std::cos(projectiles[i].angle) * 13.0f), fy + static_cast<int>(std::sin(projectiles[i].angle) * 13.0f),
+                           fx + static_cast<int>(std::cos(projectiles[i].angle + 2.5f) * 7.0f), fy + static_cast<int>(std::sin(projectiles[i].angle + 2.5f) * 7.0f),
+                           fx + static_cast<int>(std::cos(projectiles[i].angle - 2.5f) * 7.0f), fy + static_cast<int>(std::sin(projectiles[i].angle - 2.5f) * 7.0f), ORANGE);
         }
         else renderWorldEntityCircle(viewport, cameraPlayer, projectiles[i].x, projectiles[i].y, projectiles[i].radius, projectiles[i].color, 8);
     }
@@ -4781,6 +5370,23 @@ void Game::Impl::renderViewport(const Viewport& viewport, const Player& cameraPl
         else renderWorldEntityCircle(viewport, cameraPlayer, projectile.x, projectile.y, projectile.radius, projectile.color, projectile.kind == ProjectileDebris ? 14 : 8);
     }
     for (unsigned i = 0; i < enemies.size(); ++i) renderEnemy(viewport, cameraPlayer, enemies[i]);
+    for (int owner = 0; owner < playerCount; ++owner)
+    {
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            const FriendlyBot& bot = friendlyBots[owner][slot];
+            if (!bot.active) continue;
+            const Vec2 point = toScreen(viewport, cameraPlayer, bot.x, bot.y);
+            const int bx = static_cast<int>(point.x);
+            const int by = static_cast<int>(point.y);
+            const int radius = static_cast<int>(bot.radius);
+            draw::glowCircle(renderer, bx, by, radius, PURPLE, qualityGlow(8));
+            draw::circle(renderer, bx, by, radius + 5, players[owner].color);
+            draw::text(renderer, "B" + number(slot + 1), bx, by - 5, 1, WHITE, true);
+            draw::fillRect(renderer, bx - 20, by - radius - 14, 40, 5, {0, 0, 0, 220});
+            draw::fillRect(renderer, bx - 20, by - radius - 14, static_cast<int>(40.0f * clampf(bot.hp / std::max(1.0f, bot.maxHp), 0.0f, 1.0f)), 5, GREEN);
+        }
+    }
     for (unsigned i = 0; i < souls.size(); ++i)
     {
         const Vec2 soul = toScreen(viewport, cameraPlayer, souls[i].x, souls[i].y);
@@ -4896,6 +5502,19 @@ void Game::Impl::renderPlaying()
         }
         if (boss.shape == BossCircle && boss.phase == 3 && boss.state == 0)
             draw::text(renderer, "IMPACTO IMINENTE - PARE O TEMPO!", SCREEN_W / 2, 162, 3, RED, true);
+    }
+
+    if (intermissionActive)
+    {
+        int ready = 0;
+        const float portalX = (mapMinX + mapMaxX) * 0.5f;
+        const float portalY = mapMinY + 105.0f;
+        for (int i = 0; i < playerCount; ++i)
+            if (players[i].hp > 0.0f && std::abs(players[i].x - portalX) <= 145.0f && std::abs(players[i].y - portalY) <= 62.0f) ++ready;
+        draw::panel(renderer, 575, 68, 770, 96, GOLD, {0, 5, 18, 225});
+        draw::text(renderer, "INTERVALO DO MAQUINISTA", SCREEN_W / 2, 87, 2, GOLD, true);
+        draw::text(renderer, "UPGRADES -30%   GRANADA 8G", SCREEN_W / 2, 118, 1, WHITE, true);
+        draw::text(renderer, "PORTAL: " + number(ready) + "/" + number(playerCount) + " JOGADORES", SCREEN_W / 2, 140, 1, ready == playerCount ? GREEN : CYAN, true);
     }
 
     if (announcementTimer > 0.0f)
