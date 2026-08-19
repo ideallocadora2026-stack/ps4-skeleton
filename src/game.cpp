@@ -309,6 +309,16 @@ struct Player
     float touchAnchorY;
 };
 
+int vampireSoulRequirement(const Player& player)
+{
+    return std::max(10, 50 - std::max(0, player.skillLevel - 1) * 2);
+}
+
+float vampireDamageReduction(const Player& player)
+{
+    return static_cast<float>(std::max(0, player.skillLevel - 1) * 2);
+}
+
 struct Projectile
 {
     float x;
@@ -1747,7 +1757,7 @@ bool Game::Impl::anyTimeStop() const
 
 bool Game::Impl::skillReady(const Player& player) const
 {
-    if (player.character == CharacterVampire) return player.souls >= 50;
+    if (player.character == CharacterVampire) return player.souls >= vampireSoulRequirement(player);
     if (player.skillCooldown > 0.0f) return false;
     if (player.character == CharacterTimeStop) return player.timeStop <= 0.0f;
     if (player.character == CharacterDamageArea) return player.poisonAreaTimer <= 0.0f;
@@ -1778,6 +1788,7 @@ void Game::Impl::configureCharacter(Player& player)
     {
         player.skillDuration = 0.0f;
         player.skillCooldownMax = 1.0f;
+        player.souls = std::min(player.souls, vampireSoulRequirement(player));
     }
     else if (player.character == CharacterManipulator)
     {
@@ -2076,7 +2087,7 @@ void Game::Impl::updateSouls(float dt)
         soul.life -= dt;
         if (distanceSquared(soul.x, soul.y, owner.x, owner.y) < 24.0f * 24.0f)
         {
-            owner.souls = std::min(50, owner.souls + 1);
+            owner.souls = std::min(vampireSoulRequirement(owner), owner.souls + 1);
             souls.erase(souls.begin() + i);
         }
         else if (soul.life <= 0.0f) souls.erase(souls.begin() + i);
@@ -3466,7 +3477,10 @@ void Game::Impl::damagePlayer(Player& player, float damage)
         rumble(player.pad, 0.22f, 70);
         return;
     }
-    player.hp -= damage;
+    const float appliedDamage = player.character == CharacterVampire
+        ? std::max(1.0f, damage - vampireDamageReduction(player))
+        : damage;
+    player.hp -= appliedDamage;
     player.invincible = 0.4f;
     cameraShake = 14.0f;
     addParticles(player.x, player.y, RED, 16, 300.0f, 0.8f);
@@ -4451,7 +4465,7 @@ void Game::Impl::renderShop()
     {
         draw::text(renderer, std::string("ATIVO: ") + CHARACTERS[activeCharacters[pausePad]].name, 1380, 635, 2, WHITE, true);
         draw::text(renderer, CHARACTERS[activeCharacters[pausePad]].description, 1380, 685, 1, GREEN, true);
-        draw::text(renderer, activeCharacters[pausePad] == CharacterVampire ? "50 ALMAS PARA ATIVAR" : "R2 / BOTAO MAPEADO", 1380, 735, 1, MUTED, true);
+        draw::text(renderer, activeCharacters[pausePad] == CharacterVampire ? "50 ALMAS NO LV.1 / RESISTENCIA POR NIVEL" : "R2 / BOTAO MAPEADO", 1380, 735, 1, MUTED, true);
     }
     else
     {
@@ -4480,10 +4494,14 @@ void Game::Impl::renderStats()
     const int valueX = player.character == CharacterManipulator ? 990 : 1390;
     const int y = 350;
     const int spacing = 72;
+    const int vampireRequirement = vampireSoulRequirement(player);
+    const int vampireResistance = static_cast<int>(vampireDamageReduction(player));
+    const std::string vampireStats = number(player.souls) + "/" + number(vampireRequirement) + " ALMAS" +
+        (vampireResistance > 0 ? "  DEF -" + number(vampireResistance) : "");
     const std::string values[5] = {
         oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
         oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
-        (player.character == CharacterVampire ? number(player.souls) + "/50 ALMAS" :
+        (player.character == CharacterVampire ? vampireStats :
          (player.character == CharacterManipulator ? "3 BOTS" : oneDecimal(player.skillDuration) + "S")) + "   LV." + number(player.skillLevel),
         number(player.grenades), number(player.kills)
     };
@@ -5119,7 +5137,7 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
     if (player.character == CharacterDamageArea) activeDuration = player.poisonAreaTimer;
     else if (player.character == CharacterShield) activeDuration = player.shieldTimer;
     else if (player.character == CharacterDrone) activeDuration = player.droneTimer;
-    float skillRatio = player.character == CharacterVampire ? player.souls / 50.0f :
+    float skillRatio = player.character == CharacterVampire ? player.souls / static_cast<float>(vampireSoulRequirement(player)) :
         (activeDuration > 0.0f ? activeDuration / std::max(0.01f, player.skillDuration) : 1.0f - player.skillCooldown / std::max(0.01f, player.skillCooldownMax));
     draw::fillRect(renderer, leftX + 15, barsY + 69, static_cast<int>((leftWidth - 30) * clampf(skillRatio, 0.0f, 1.0f)), 8,
                    activeDuration > 0.0f ? RED : CHARACTERS[player.character].color);
