@@ -358,6 +358,7 @@ struct Enemy
     float burnTimer;
     float burnVisualTimer;
     int burnOwner;
+    int botCreditOwner;
 };
 
 struct FriendlyBot
@@ -2028,21 +2029,12 @@ void Game::Impl::updateFriendlyBots(float dt)
                 {
                     Enemy& target = enemies[enemyIndex];
                     target.hp -= 6.0f;
+                    target.botCreditOwner = owner;
                     addParticles(target.x, target.y, PURPLE, 3, 120.0f, 0.35f);
                     if (target.hp <= 0.0f)
                     {
                         const Enemy defeated = target;
                         rewardDefeatedEnemy(defeated, owner);
-                        Player& botOwner = players[owner];
-                        ++botOwner.botKillProgress;
-                        if (botOwner.botKillProgress >= 2)
-                        {
-                            botOwner.botKillProgress -= 2;
-                            ++profileSilver;
-                            profileDirty = true;
-                            saveProfile(false);
-                            addFloatingText(bot.x, bot.y - 34.0f, "BOTS +1 S", SILVER);
-                        }
                         enemies.erase(enemies.begin() + enemyIndex);
                     }
                 }
@@ -2168,6 +2160,23 @@ void Game::Impl::addDrop(float x, float y, DropType type)
 
 void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
 {
+    if (enemy.botCreditOwner >= 0 && enemy.botCreditOwner < playerCount &&
+        players[enemy.botCreditOwner].character == CharacterManipulator)
+    {
+        Player& manipulator = players[enemy.botCreditOwner];
+        ++manipulator.botKillProgress;
+        if (manipulator.botKillProgress >= 2)
+        {
+            manipulator.botKillProgress = 0;
+            ++profileSilver;
+            profileDirty = true;
+            saveProfile(false);
+            addFloatingText(enemy.x, enemy.y - 42.0f, "BOT 2/2  +1S", SILVER);
+            addFloatingText(manipulator.x, manipulator.y - 52.0f, "+1 SILVER DOS BOTS", SILVER);
+            showNotice("BOTS: 2 KILLS = +1 SILVER");
+        }
+        else addFloatingText(enemy.x, enemy.y - 42.0f, "BOT 1/2", SILVER);
+    }
     if (enemy.kind == 1)
     {
         addDrop(enemy.x, enemy.y, DropType::Heart);
@@ -2237,6 +2246,7 @@ void Game::Impl::spawnEnemy()
     enemy.burnTimer = 0.0f;
     enemy.burnVisualTimer = 0.0f;
     enemy.burnOwner = -1;
+    enemy.botCreditOwner = -1;
     enemies.push_back(enemy);
 }
 
@@ -2363,6 +2373,7 @@ void Game::Impl::spawnBossDrone()
     drone.burnTimer = 0.0f;
     drone.burnVisualTimer = 0.0f;
     drone.burnOwner = -1;
+    drone.botCreditOwner = -1;
     enemies.push_back(drone);
     ++boss.droneCount;
 }
@@ -4514,7 +4525,7 @@ void Game::Impl::renderStats()
         oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
         oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
         (player.character == CharacterVampire ? vampireStats :
-         (player.character == CharacterManipulator ? "3 BOTS / " + oneDecimal(player.skillCooldownMax) + "S" : oneDecimal(player.skillDuration) + "S")) + "   LV." + number(player.skillLevel),
+         (player.character == CharacterManipulator ? "3 BOTS / " + oneDecimal(player.skillCooldownMax) + "/S" : oneDecimal(player.skillDuration) + "/S")) + "   LV." + number(player.skillLevel),
         number(player.grenades), number(player.kills)
     };
     const char* labels[5] = {"VELOCIDADE DO TIRO", "DANO DO JOGADOR", "HABILIDADE", "GRANADAS", "KILLS"};
@@ -4541,7 +4552,8 @@ void Game::Impl::renderStats()
             draw::fillRect(renderer, 1318, botY + 19, 102, 44, GREEN);
             draw::text(renderer, "X 5G", 1369, botY + 32, 1, BG, true);
         }
-        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 700, 1, MUTED, true);
+        draw::text(renderer, "BOT KILLS: " + number(player.botKillProgress) + "/2 = 1S", 1245, 700, 1, SILVER, true);
+        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 735, 1, MUTED, true);
     }
     draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 910, 2, MUTED, true);
 }
@@ -5174,7 +5186,7 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
         const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(displayedPrice(player.damageCost)) + " G";
         draw::text(renderer, damagePrice, shopX + 385 - draw::textWidth(damagePrice, 1), shopY + 67, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
-        draw::text(renderer, "HABI LV" + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
+        draw::text(renderer, "HABI LV." + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
         const std::string skillPrice = number(displayedPrice(player.skillCost)) + " G";
         draw::text(renderer, skillPrice, shopX + 385 - draw::textWidth(skillPrice, 1), shopY + 95, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionBuyGrenade]) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
