@@ -289,7 +289,6 @@ struct Player
     int grenades;
     int character;
     int souls;
-    int botKillProgress;
     float poisonAreaTimer;
     float shieldTimer;
     float droneTimer;
@@ -359,6 +358,7 @@ struct Enemy
     float burnVisualTimer;
     int burnOwner;
     int botCreditOwner;
+    int botCreditSlot;
 };
 
 struct FriendlyBot
@@ -374,6 +374,8 @@ struct FriendlyBot
     float radius;
     float angle;
     float attackTimer;
+    int killProgress;
+    int storedSilver;
     Color color;
 };
 
@@ -829,6 +831,7 @@ struct Game::Impl
     void manipulateEnemies(Player& player, int playerIndex);
     void updateFriendlyBots(float dt);
     void repairFriendlyBot(Player& player, int playerIndex, int slot);
+    void collectBotSilver(Player& player, int playerIndex);
     void addParticles(float x, float y, Color color, int count, float speed, float life = 0.7f);
     void addFloatingText(float x, float y, const std::string& text, Color color);
     void addDrop(float x, float y, DropType type);
@@ -1631,6 +1634,7 @@ void Game::Impl::updateStats(float)
         if (pressed(pausePad, PAD_UP)) statsBotIndex = (statsBotIndex + 2) % 3;
         if (pressed(pausePad, PAD_DOWN)) statsBotIndex = (statsBotIndex + 1) % 3;
         if (pressed(pausePad, PAD_CROSS)) repairFriendlyBot(player, playerIndex, statsBotIndex);
+        if (pressed(pausePad, PAD_SQUARE)) collectBotSilver(player, playerIndex);
     }
 }
 
@@ -1732,7 +1736,6 @@ void Game::Impl::startGame(int count)
         player.hat = activeHats[slot];
         player.character = activeCharacters[slot];
         player.souls = 0;
-        player.botKillProgress = 0;
         player.poisonAreaTimer = 0.0f;
         player.shieldTimer = 0.0f;
         player.droneTimer = 0.0f;
@@ -1966,6 +1969,27 @@ void Game::Impl::repairFriendlyBot(Player& player, int playerIndex, int slot)
     showNotice("BOT " + number(slot + 1) + " REPARADO");
 }
 
+void Game::Impl::collectBotSilver(Player& player, int playerIndex)
+{
+    int total = 0;
+    for (int slot = 0; slot < 3; ++slot)
+    {
+        total += friendlyBots[playerIndex][slot].storedSilver;
+        friendlyBots[playerIndex][slot].storedSilver = 0;
+    }
+    if (total <= 0)
+    {
+        showNotice("CAIXAS DOS BOTS VAZIAS");
+        return;
+    }
+    profileSilver += total;
+    profileDirty = true;
+    saveProfile(false);
+    addFloatingText(player.x, player.y - 54.0f, "+" + number(total) + " SILVER COLETADO", SILVER);
+    showNotice("COLETAR TUDO: +" + number(total) + " SILVER");
+    rumble(player.pad, 0.55f, 320);
+}
+
 void Game::Impl::updateFriendlyBots(float dt)
 {
     for (int owner = 0; owner < playerCount; ++owner)
@@ -2030,6 +2054,7 @@ void Game::Impl::updateFriendlyBots(float dt)
                     Enemy& target = enemies[enemyIndex];
                     target.hp -= 6.0f;
                     target.botCreditOwner = owner;
+                    target.botCreditSlot = slot;
                     addParticles(target.x, target.y, PURPLE, 3, 120.0f, 0.35f);
                     if (target.hp <= 0.0f)
                     {
@@ -2161,21 +2186,19 @@ void Game::Impl::addDrop(float x, float y, DropType type)
 void Game::Impl::rewardDefeatedEnemy(const Enemy& enemy, int owner)
 {
     if (enemy.botCreditOwner >= 0 && enemy.botCreditOwner < playerCount &&
-        players[enemy.botCreditOwner].character == CharacterManipulator)
+        enemy.botCreditSlot >= 0 && enemy.botCreditSlot < 3)
     {
-        Player& manipulator = players[enemy.botCreditOwner];
-        ++manipulator.botKillProgress;
-        if (manipulator.botKillProgress >= 2)
+        FriendlyBot& creditedBot = friendlyBots[enemy.botCreditOwner][enemy.botCreditSlot];
+        ++creditedBot.killProgress;
+        if (creditedBot.killProgress >= 2)
         {
-            manipulator.botKillProgress = 0;
-            ++profileSilver;
-            profileDirty = true;
-            saveProfile(false);
-            addFloatingText(enemy.x, enemy.y - 42.0f, "BOT 2/2  +1S", SILVER);
-            addFloatingText(manipulator.x, manipulator.y - 52.0f, "+1 SILVER DOS BOTS", SILVER);
-            showNotice("BOTS: 2 KILLS = +1 SILVER");
+            creditedBot.killProgress -= 2;
+            ++creditedBot.storedSilver;
+            addFloatingText(enemy.x, enemy.y - 42.0f,
+                            "BOT " + number(enemy.botCreditSlot + 1) + " CAIXA +1S", SILVER);
         }
-        else addFloatingText(enemy.x, enemy.y - 42.0f, "BOT 1/2", SILVER);
+        else addFloatingText(enemy.x, enemy.y - 42.0f,
+                             "BOT " + number(enemy.botCreditSlot + 1) + "  1/2", SILVER);
     }
     if (enemy.kind == 1)
     {
@@ -2247,6 +2270,7 @@ void Game::Impl::spawnEnemy()
     enemy.burnVisualTimer = 0.0f;
     enemy.burnOwner = -1;
     enemy.botCreditOwner = -1;
+    enemy.botCreditSlot = -1;
     enemies.push_back(enemy);
 }
 
@@ -2374,6 +2398,7 @@ void Game::Impl::spawnBossDrone()
     drone.burnVisualTimer = 0.0f;
     drone.burnOwner = -1;
     drone.botCreditOwner = -1;
+    drone.botCreditSlot = -1;
     enemies.push_back(drone);
     ++boss.droneCount;
 }
@@ -4546,14 +4571,17 @@ void Game::Impl::renderStats()
             const bool selected = statsBotIndex == slot;
             draw::fillRect(renderer, 1050, botY, 390, 82, selected ? Color{70, 15, 100, 190} : Color{0, 8, 20, 200});
             draw::outlineRect(renderer, 1050, botY, 390, 82, selected ? GREEN : withAlpha(PURPLE, 120), selected ? 3 : 1);
-            draw::text(renderer, "BOT " + number(slot + 1), 1070, botY + 14, 2, bot.active ? WHITE : MUTED);
+            draw::text(renderer, "BOT " + number(slot + 1), 1070, botY + 8, 2, bot.active ? WHITE : MUTED);
             const std::string botLife = bot.active ? number(static_cast<int>(std::ceil(bot.hp))) + "/" + number(static_cast<int>(std::ceil(bot.maxHp))) : "INATIVO";
-            draw::text(renderer, botLife, 1070, botY + 49, 1, bot.active ? GREEN : RED);
+            draw::text(renderer, "CAIXA: " + number(bot.storedSilver) + "S  KILL: " + number(bot.killProgress) + "/2", 1070, botY + 39, 1, SILVER);
+            draw::text(renderer, "VIDA: " + botLife, 1070, botY + 59, 1, bot.active ? GREEN : RED);
             draw::fillRect(renderer, 1318, botY + 19, 102, 44, GREEN);
             draw::text(renderer, "X 5G", 1369, botY + 32, 1, BG, true);
         }
-        draw::text(renderer, "BOT KILLS: " + number(player.botKillProgress) + "/2 = 1S", 1245, 700, 1, SILVER, true);
-        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 735, 1, MUTED, true);
+        draw::fillRect(renderer, 1100, 684, 290, 50, GREEN);
+        draw::outlineRect(renderer, 1100, 684, 290, 50, WHITE, 2);
+        draw::text(renderer, "[" + std::string(buttonName(PAD_SQUARE)) + "] COLETAR TUDO", 1245, 700, 1, BG, true);
+        draw::text(renderer, "D-PAD ESCOLHE   X REPARA METADE DA VIDA", 1245, 750, 1, MUTED, true);
     }
     draw::text(renderer, std::string("[") + buttonName(player.keys[ActionStats]) + "] OU O PARA VOLTAR", SCREEN_W / 2, 910, 2, MUTED, true);
 }
