@@ -289,6 +289,7 @@ struct Player
     int grenades;
     int character;
     int souls;
+    int botKillProgress;
     float poisonAreaTimer;
     float shieldTimer;
     float droneTimer;
@@ -1730,6 +1731,7 @@ void Game::Impl::startGame(int count)
         player.hat = activeHats[slot];
         player.character = activeCharacters[slot];
         player.souls = 0;
+        player.botKillProgress = 0;
         player.poisonAreaTimer = 0.0f;
         player.shieldTimer = 0.0f;
         player.droneTimer = 0.0f;
@@ -1793,7 +1795,7 @@ void Game::Impl::configureCharacter(Player& player)
     else if (player.character == CharacterManipulator)
     {
         player.skillDuration = 0.0f;
-        player.skillCooldownMax = std::max(8.0f, 18.0f - (player.skillLevel - 1) * 0.8f);
+        player.skillCooldownMax = std::max(10.0f, 50.0f - (player.skillLevel - 1) * 2.0f);
     }
     else
     {
@@ -2031,6 +2033,16 @@ void Game::Impl::updateFriendlyBots(float dt)
                     {
                         const Enemy defeated = target;
                         rewardDefeatedEnemy(defeated, owner);
+                        Player& botOwner = players[owner];
+                        ++botOwner.botKillProgress;
+                        if (botOwner.botKillProgress >= 2)
+                        {
+                            botOwner.botKillProgress -= 2;
+                            ++profileSilver;
+                            profileDirty = true;
+                            saveProfile(false);
+                            addFloatingText(bot.x, bot.y - 34.0f, "BOTS +1 S", SILVER);
+                        }
                         enemies.erase(enemies.begin() + enemyIndex);
                     }
                 }
@@ -4502,7 +4514,7 @@ void Game::Impl::renderStats()
         oneDecimal(1.0f / std::max(0.01f, player.fireRate)) + "/S   LV." + number(player.fireLevel),
         oneDecimal(20.0f * player.damageMultiplier) + "   LV." + number(player.damageLevel),
         (player.character == CharacterVampire ? vampireStats :
-         (player.character == CharacterManipulator ? "3 BOTS" : oneDecimal(player.skillDuration) + "S")) + "   LV." + number(player.skillLevel),
+         (player.character == CharacterManipulator ? "3 BOTS / " + oneDecimal(player.skillCooldownMax) + "S" : oneDecimal(player.skillDuration) + "S")) + "   LV." + number(player.skillLevel),
         number(player.grenades), number(player.kills)
     };
     const char* labels[5] = {"VELOCIDADE DO TIRO", "DANO DO JOGADOR", "HABILIDADE", "GRANADAS", "KILLS"};
@@ -5162,7 +5174,7 @@ void Game::Impl::renderHud(const Viewport& viewport, const Player& player, int i
         const std::string damagePrice = player.damageLevel >= 10 ? "MAX" : number(displayedPrice(player.damageCost)) + " G";
         draw::text(renderer, damagePrice, shopX + 385 - draw::textWidth(damagePrice, 1), shopY + 67, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionUpgradeSkill]) + "]", shopX + 15, shopY + 96, 1, MUTED);
-        draw::text(renderer, "HABILIDADE LV." + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
+        draw::text(renderer, "HABI LV" + number(player.skillLevel), shopX + 170, shopY + 95, 1, WHITE);
         const std::string skillPrice = number(displayedPrice(player.skillCost)) + " G";
         draw::text(renderer, skillPrice, shopX + 385 - draw::textWidth(skillPrice, 1), shopY + 95, 1, GOLD);
         draw::text(renderer, std::string("[") + buttonName(player.keys[ActionBuyGrenade]) + "]", shopX + 15, shopY + 124, 1, GRENADE_GREEN);
